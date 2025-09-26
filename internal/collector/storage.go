@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	ticketsBucket    = "tickets"
-	metadataBucket   = "metadata"
-	processedBucket  = "processed"
-	lastUpdateKey    = "last_update"
-	sendCountKey     = "send_count"
-	refreshCountKey  = "refresh_count"
+	ticketsBucket   = "tickets"
+	metadataBucket  = "metadata"
+	processedBucket = "processed"
+	lastUpdateKey   = "last_update"
+	sendCountKey    = "send_count"
+	refreshCountKey = "refresh_count"
 )
 
 type Storage struct {

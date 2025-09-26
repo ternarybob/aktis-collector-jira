@@ -187,6 +187,18 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Copy configuration file to bin directory
+$configSourcePath = Join-Path -Path $projectRoot -ChildPath "deployments\aktis-collector-jira.toml"
+$configDestPath = Join-Path -Path $binDir -ChildPath "aktis-collector-jira.toml"
+
+if (Test-Path $configSourcePath) {
+    Write-Host "Copying configuration file..." -ForegroundColor Yellow
+    Copy-Item -Path $configSourcePath -Destination $configDestPath -Force
+    Write-Host "Configuration copied to: $configDestPath" -ForegroundColor Green
+} else {
+    Write-Host "Warning: Configuration file not found at $configSourcePath" -ForegroundColor Yellow
+}
+
 # Success message
 Write-Host "" -ForegroundColor Green
 Write-Host "Build completed successfully!" -ForegroundColor Green
@@ -203,5 +215,6 @@ Write-Host "" -ForegroundColor Green
 Write-Host "Usage examples:" -ForegroundColor Cyan
 Write-Host "  $collectorOutputPath -help" -ForegroundColor White
 Write-Host "  $collectorOutputPath -version" -ForegroundColor White
-Write-Host "  $collectorOutputPath -config config.json" -ForegroundColor White
-Write-Host "  $collectorOutputPath -config config.json -update" -ForegroundColor White
+Write-Host "  $collectorOutputPath -config aktis-collector-jira.toml" -ForegroundColor White
+Write-Host "  $collectorOutputPath -config aktis-collector-jira.toml -update" -ForegroundColor White
+Write-Host "  $collectorOutputPath -config aktis-collector-jira.toml -mode prod -quiet" -ForegroundColor White

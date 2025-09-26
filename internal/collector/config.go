@@ -9,12 +9,12 @@ import (
 )
 
 type Config struct {
-	Collector      CollectorConfig            `toml:"collector"`
-	Jira           JiraConfig                 `toml:"jira"`
-	ProjectsList   ProjectsList               `toml:"projects"`
-	ProjectConfigs map[string]ProjectConfig   `toml:",inline"`
-	Projects       []ProjectConfig            `toml:"-"`
-	Storage        StorageConfig              `toml:"storage"`
+	Collector      CollectorConfig          `toml:"collector"`
+	Jira           JiraConfig               `toml:"jira"`
+	ProjectsList   ProjectsList             `toml:"projects"`
+	ProjectConfigs map[string]ProjectConfig `toml:",inline"`
+	Projects       []ProjectConfig          `toml:"-"`
+	Storage        StorageConfig            `toml:"storage"`
 }
 
 type CollectorConfig struct {
