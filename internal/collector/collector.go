@@ -33,6 +33,14 @@ func NewJiraCollector(config *Config) (*JiraCollector, error) {
 	}, nil
 }
 
+// Close closes the collector and releases resources
+func (jc *JiraCollector) Close() error {
+	if jc.storage != nil {
+		return jc.storage.Close()
+	}
+	return nil
+}
+
 // CollectAllTickets collects all tickets from configured projects in batches
 func (jc *JiraCollector) CollectAllTickets(batchSize int) ([]plugin.Payload, error) {
 	jc.startTime = time.Now()
@@ -44,6 +52,11 @@ func (jc *JiraCollector) CollectAllTickets(batchSize int) ([]plugin.Payload, err
 			return nil, fmt.Errorf("failed to collect tickets for project %s: %w", project.Key, err)
 		}
 		allPayloads = append(allPayloads, payloads...)
+	}
+
+	sendLimit := jc.config.Collector.SendLimit
+	if sendLimit > 0 && len(allPayloads) > sendLimit {
+		allPayloads = allPayloads[:sendLimit]
 	}
 
 	return allPayloads, nil
@@ -74,7 +87,69 @@ func (jc *JiraCollector) UpdateTickets(batchSize int) ([]plugin.Payload, error) 
 		}
 	}
 
+	sendLimit := jc.config.Collector.SendLimit
+	if sendLimit > 0 && len(allPayloads) > sendLimit {
+		allPayloads = allPayloads[:sendLimit]
+	}
+
 	return allPayloads, nil
+}
+
+// GetUnsentPayloads retrieves unsent tickets from storage and converts to payloads
+func (jc *JiraCollector) GetUnsentPayloads() ([]plugin.Payload, error) {
+	var allPayloads []plugin.Payload
+	sendLimit := jc.config.Collector.SendLimit
+
+	for _, project := range jc.config.Projects {
+		tickets, err := jc.storage.GetUnsentTickets(project.Key, sendLimit-len(allPayloads))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get unsent tickets for project %s: %w", project.Key, err)
+		}
+
+		for _, ticket := range tickets {
+			payload := plugin.Payload{
+				Timestamp: ticket.Updated,
+				Type:      fmt.Sprintf("jira_%s", jc.getIssueTypeFromData(ticket.Data)),
+				Data:      ticket.Data,
+				Metadata: map[string]string{
+					"project":   project.Key,
+					"ticket_id": ticket.Key,
+					"source":    "jira",
+					"mode":      "resend",
+				},
+			}
+			allPayloads = append(allPayloads, payload)
+
+			if len(allPayloads) >= sendLimit {
+				break
+			}
+		}
+
+		if len(allPayloads) >= sendLimit {
+			break
+		}
+	}
+
+	return allPayloads, nil
+}
+
+// MarkPayloadsAsSent marks the given payloads as sent in storage
+func (jc *JiraCollector) MarkPayloadsAsSent(payloads []plugin.Payload) error {
+	projectTickets := make(map[string][]string)
+
+	for _, payload := range payloads {
+		projectKey := payload.Metadata["project"]
+		ticketID := payload.Metadata["ticket_id"]
+		projectTickets[projectKey] = append(projectTickets[projectKey], ticketID)
+	}
+
+	for projectKey, ticketKeys := range projectTickets {
+		if err := jc.storage.MarkTicketsAsSent(ticketKeys, projectKey); err != nil {
+			return fmt.Errorf("failed to mark tickets as sent for project %s: %w", projectKey, err)
+		}
+	}
+
+	return nil
 }
 
 func (jc *JiraCollector) collectProjectTickets(project ProjectConfig, batchSize int) ([]plugin.Payload, error) {
@@ -195,6 +270,13 @@ func (jc *JiraCollector) getIssueType(issue *JiraIssue) string {
 		if name, ok := issueType["name"].(string); ok {
 			return strings.ToLower(strings.ReplaceAll(name, " ", "_"))
 		}
+	}
+	return "unknown"
+}
+
+func (jc *JiraCollector) getIssueTypeFromData(data map[string]interface{}) string {
+	if issueType, ok := data["issue_type"].(string); ok {
+		return strings.ToLower(strings.ReplaceAll(issueType, " ", "_"))
 	}
 	return "unknown"
 }

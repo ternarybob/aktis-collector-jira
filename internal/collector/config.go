@@ -1,73 +1,68 @@
 package collector
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
-// Config represents the Jira collector configuration
 type Config struct {
-	Jira     JiraConfig      `json:"jira"`
-	Projects []ProjectConfig `json:"projects"`
-	Storage  StorageConfig   `json:"storage"`
+	Collector      CollectorConfig            `toml:"collector"`
+	Jira           JiraConfig                 `toml:"jira"`
+	ProjectsList   ProjectsList               `toml:"projects"`
+	ProjectConfigs map[string]ProjectConfig   `toml:",inline"`
+	Projects       []ProjectConfig            `toml:"-"`
+	Storage        StorageConfig              `toml:"storage"`
 }
 
-// JiraConfig contains Jira connection settings
+type CollectorConfig struct {
+	Name        string `toml:"name"`
+	Environment string `toml:"environment"`
+	SendLimit   int    `toml:"send_limit"`
+}
+
 type JiraConfig struct {
-	BaseURL  string `json:"base_url"`
-	Username string `json:"username"`
-	APIToken string `json:"api_token"`
-	Timeout  int    `json:"timeout_seconds,omitempty"`
+	BaseURL  string `toml:"base_url"`
+	Username string `toml:"username"`
+	APIToken string `toml:"api_token"`
+	Timeout  int    `toml:"timeout_seconds"`
 }
 
-// ProjectConfig represents a Jira project to collect tickets from
+type ProjectsList struct {
+	Projects []string `toml:"projects"`
+}
+
 type ProjectConfig struct {
-	Key            string   `json:"key"`
-	Name           string   `json:"name"`
-	IssueTypes     []string `json:"issue_types,omitempty"`
-	Statuses       []string `json:"statuses,omitempty"`
-	MaxResults     int      `json:"max_results,omitempty"`
-	IncludeHistory bool     `json:"include_history,omitempty"`
+	Key            string   `toml:"-"`
+	Name           string   `toml:"name"`
+	IssueTypes     []string `toml:"issue_types"`
+	Statuses       []string `toml:"statuses"`
+	MaxResults     int      `toml:"max_results"`
+	IncludeHistory bool     `toml:"include_history"`
 }
 
-// StorageConfig contains data storage settings
 type StorageConfig struct {
-	DataDir       string `json:"data_dir"`
-	BackupDir     string `json:"backup_dir,omitempty"`
-	MaxFileSize   int64  `json:"max_file_size_mb,omitempty"`
-	RetentionDays int    `json:"retention_days,omitempty"`
+	DatabasePath  string `toml:"database_path"`
+	BackupDir     string `toml:"backup_dir"`
+	RetentionDays int    `toml:"retention_days"`
 }
 
-// LoadConfig loads configuration from file or returns default config
-func LoadConfig(configFile string) (*Config, error) {
-	if configFile != "" {
-		return loadConfigFromFile(configFile)
-	}
-	return getDefaultConfig(), nil
-}
+func DefaultConfig() *Config {
+	execPath, _ := os.Executable()
+	execDir := filepath.Dir(execPath)
+	execName := filepath.Base(execPath)
+	execName = execName[:len(execName)-len(filepath.Ext(execName))]
 
-func loadConfigFromFile(filePath string) (*Config, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file %s: %w", filePath, err)
-	}
+	defaultDBPath := filepath.Join(execDir, "data", execName+".db")
 
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
-	}
-
-	// Validate configuration
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
-	}
-
-	return &config, nil
-}
-
-func getDefaultConfig() *Config {
 	return &Config{
+		Collector: CollectorConfig{
+			Name:        "aktis-collector-jira",
+			Environment: "development",
+			SendLimit:   100,
+		},
 		Jira: JiraConfig{
 			BaseURL:  "https://your-company.atlassian.net",
 			Username: "your-email@company.com",
@@ -76,23 +71,70 @@ func getDefaultConfig() *Config {
 		},
 		Projects: []ProjectConfig{
 			{
-				Key:        "PROJ",
-				Name:       "Main Project",
-				IssueTypes: []string{"Bug", "Story", "Task", "Epic"},
-				Statuses:   []string{"To Do", "In Progress", "In Review", "Done"},
-				MaxResults: 1000,
+				Key:            "PROJ",
+				Name:           "Main Project",
+				IssueTypes:     []string{"Bug", "Story", "Task", "Epic"},
+				Statuses:       []string{"To Do", "In Progress", "In Review", "Done"},
+				MaxResults:     1000,
+				IncludeHistory: true,
 			},
 		},
 		Storage: StorageConfig{
-			DataDir:       "./data",
+			DatabasePath:  defaultDBPath,
 			BackupDir:     "./backups",
-			MaxFileSize:   100,
-			RetentionDays: 30,
+			RetentionDays: 90,
 		},
 	}
 }
 
-// Validate checks if the configuration is valid
+func LoadConfig(configFile string) (*Config, error) {
+	config := DefaultConfig()
+
+	if configFile == "" {
+		return config, nil
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file %s: %w", configFile, err)
+	}
+
+	var rawConfig map[string]interface{}
+	if err := toml.Unmarshal(data, &rawConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if err := toml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if len(config.ProjectsList.Projects) > 0 {
+		config.Projects = make([]ProjectConfig, 0, len(config.ProjectsList.Projects))
+		for _, projectKey := range config.ProjectsList.Projects {
+			if projectData, ok := rawConfig[projectKey]; ok {
+				var projectConfig ProjectConfig
+				projectBytes, err := toml.Marshal(projectData)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal project %s: %w", projectKey, err)
+				}
+				if err := toml.Unmarshal(projectBytes, &projectConfig); err != nil {
+					return nil, fmt.Errorf("failed to parse project %s: %w", projectKey, err)
+				}
+				projectConfig.Key = projectKey
+				config.Projects = append(config.Projects, projectConfig)
+			} else {
+				return nil, fmt.Errorf("project %s listed but configuration not found", projectKey)
+			}
+		}
+	}
+
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	return config, nil
+}
+
 func (c *Config) Validate() error {
 	if c.Jira.BaseURL == "" {
 		return fmt.Errorf("jira base_url is required")
@@ -111,8 +153,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("project key is required")
 		}
 	}
-	if c.Storage.DataDir == "" {
-		return fmt.Errorf("storage data_dir is required")
+	if c.Storage.DatabasePath == "" {
+		return fmt.Errorf("storage database_path is required")
+	}
+	if c.Collector.SendLimit <= 0 {
+		c.Collector.SendLimit = 100
 	}
 	return nil
 }

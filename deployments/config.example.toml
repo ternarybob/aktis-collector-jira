@@ -1,0 +1,38 @@
+# Aktis Collector - Jira Configuration
+
+[collector]
+name = "aktis-collector-jira"
+environment = "development"
+send_limit = 100  # Maximum number of payloads to send per run (default: 100)
+
+[jira]
+base_url = "https://your-company.atlassian.net"
+username = "your-email@company.com"
+api_token = "your-jira-api-token"
+timeout_seconds = 30
+
+[projects]
+# List of project keys to collect from
+projects = ["dev", "proj"]
+
+[dev]
+name = "Development Project"
+issue_types = ["Bug", "Story", "Task", "Epic", "Sub-task"]
+statuses = ["To Do", "In Progress", "In Review", "Done", "Closed"]
+max_results = 1000
+include_history = true
+
+[proj]
+name = "Product Project"
+issue_types = ["Bug", "Feature", "Improvement", "Task"]
+statuses = ["Open", "In Progress", "Resolved", "Closed"]
+max_results = 500
+include_history = false
+
+[storage]
+# Database file location - defaults to {executable_location}/data/{exec_name}.db
+database_path = "./data/aktis-collector-jira.db"
+# Backup directory for database backups
+backup_dir = "./backups"
+# Data retention in days (0 = keep forever)
+retention_days = 90

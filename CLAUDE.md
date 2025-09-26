@@ -95,31 +95,47 @@ Jira API → Collector (batch processing) → JSON Storage (data/*.json)
 
 ## Configuration
 
-Located at `internal/config.example.json`:
-```json
-{
-  "jira": {
-    "base_url": "https://company.atlassian.net",
-    "username": "email@company.com",
-    "api_token": "token",
-    "timeout_seconds": 30
-  },
-  "projects": [
-    {
-      "key": "DEV",
-      "name": "Development Project",
-      "issue_types": ["Bug", "Story", "Task"],
-      "statuses": ["To Do", "In Progress", "Done"],
-      "max_results": 1000
-    }
-  ],
-  "storage": {
-    "data_dir": "./data",
-    "backup_dir": "./backups",
-    "retention_days": 90
-  }
-}
+Located at `configs/config.example.toml`:
+```toml
+[collector]
+name = "aktis-collector-jira"
+environment = "development"
+send_limit = 100  # Max payloads per run
+
+[jira]
+base_url = "https://your-company.atlassian.net"
+username = "your-email@company.com"
+api_token = "your-jira-api-token"
+timeout_seconds = 30
+
+[projects]
+projects = ["dev", "proj"]
+
+[dev]
+name = "Development Project"
+issue_types = ["Bug", "Story", "Task", "Epic"]
+statuses = ["To Do", "In Progress", "Done"]
+max_results = 1000
+include_history = true
+
+[proj]
+name = "Product Project"
+issue_types = ["Bug", "Feature", "Task"]
+statuses = ["Open", "In Progress", "Closed"]
+max_results = 500
+include_history = false
+
+[storage]
+database_path = "./data/aktis-collector-jira.db"
+backup_dir = "./backups"
+retention_days = 90
 ```
+
+**Configuration Loading Order:**
+1. Defaults (from `DefaultConfig()`)
+2. TOML file override (if provided)
+3. Environment variables
+4. Command line flags
 
 ## Go Version
 

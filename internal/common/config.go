@@ -38,30 +38,7 @@ func DefaultAppConfig() *AppConfig {
 }
 
 func getDefaultCollectorConfig() *collector.Config {
-	return &collector.Config{
-		Jira: collector.JiraConfig{
-			BaseURL:  "https://your-company.atlassian.net",
-			Username: "your-email@company.com",
-			APIToken: "your-api-token",
-			Timeout:  30,
-		},
-		Projects: []collector.ProjectConfig{
-			{
-				Key:            "PROJ",
-				Name:           "Main Project",
-				IssueTypes:     []string{"Bug", "Story", "Task", "Epic"},
-				Statuses:       []string{"To Do", "In Progress", "In Review", "Done"},
-				MaxResults:     1000,
-				IncludeHistory: false,
-			},
-		},
-		Storage: collector.StorageConfig{
-			DataDir:       "./data",
-			BackupDir:     "./backups",
-			MaxFileSize:   100,
-			RetentionDays: 30,
-		},
-	}
+	return collector.DefaultConfig()
 }
 
 // LoadFromFile loads configuration with priority: defaults -> JSON -> environment -> command line
@@ -120,11 +97,16 @@ func applyEnvOverrides(config *AppConfig) {
 	}
 
 	// Storage configuration overrides
-	if dataDir := os.Getenv("DATA_DIR"); dataDir != "" {
-		config.Collector.Storage.DataDir = dataDir
+	if dbPath := os.Getenv("DATABASE_PATH"); dbPath != "" {
+		config.Collector.Storage.DatabasePath = dbPath
 	}
 	if backupDir := os.Getenv("BACKUP_DIR"); backupDir != "" {
 		config.Collector.Storage.BackupDir = backupDir
+	}
+	if sendLimit := os.Getenv("SEND_LIMIT"); sendLimit != "" {
+		if limit, err := strconv.Atoi(sendLimit); err == nil {
+			config.Collector.Collector.SendLimit = limit
+		}
 	}
 
 	// Logging configuration overrides

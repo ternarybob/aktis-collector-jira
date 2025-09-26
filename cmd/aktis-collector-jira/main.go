@@ -1,3 +1,8 @@
+// -----------------------------------------------------------------------
+// Last Modified: Friday, 26th September 2025 4:58:22 pm
+// Modified By: Bob McAllan
+// -----------------------------------------------------------------------
+
 package main
 
 import (
@@ -47,12 +52,15 @@ func main() {
 	// Parse environment from mode
 	environment := parseMode(*mode)
 
-	// Load configuration with priority: defaults -> JSON -> environment -> command line
-	cfg, err := common.LoadFromFile(*configPath)
+	// Load configuration with priority: defaults -> TOML
+	cfg, err := collector.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Update environment from command line
+	cfg.Collector.Environment = environment
 
 	// Handle validate flag
 	if *validateConfig {
@@ -60,8 +68,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Initialize logger with config before any logging operations
-	if err := common.InitLogger(&cfg.Logging); err != nil {
+	// Initialize logger
+	loggingConfig := &common.LoggingConfig{
+		Level:  "info",
+		Format: "text",
+		Output: "both",
+	}
+	if err := common.InitLogger(loggingConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
@@ -94,12 +107,13 @@ func main() {
 
 	// Initialize Jira collector
 	logger.Info().Msg("Initializing Jira collector...")
-	jiraCollector, err := collector.NewJiraCollector(cfg.GetCollectorConfig())
+	jiraCollector, err := collector.NewJiraCollector(cfg)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to initialize Jira collector")
 		handleError(err, *quiet, environment, startTime)
 		return
 	}
+	defer jiraCollector.Close()
 	logger.Info().Msg("Jira collector initialized successfully")
 
 	// Collect data based on mode

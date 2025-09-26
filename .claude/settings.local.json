@@ -19,7 +19,8 @@
       "Bash(powershell.exe:*)",
       "Bash(\"./bin/aktis-collector-jira.exe\" -version)",
       "Bash(\"./bin/aktis-collector-jira.exe\" -help)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(./bin/aktis-collector-jira.exe:*)"
     ],
     "deny": [],
     "ask": []
