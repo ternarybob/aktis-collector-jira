@@ -6,10 +6,12 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// Storage handles data persistence and retrievaltype Storage struct {
+// Storage handles data persistence and retrieval
+type Storage struct {
 	config *StorageConfig
 }
 
@@ -32,7 +34,8 @@ type ProjectDataset struct {
 	Tickets    map[string]*TicketData  `json:"tickets"`
 }
 
-// NewStorage creates a new storage instancefunc NewStorage(config *StorageConfig) (*Storage, error) {
+// NewStorage creates a new storage instance
+func NewStorage(config *StorageConfig) (*Storage, error) {
 	storage := &Storage{config: config}
 	
 	// Create data directory if it doesn't exist
@@ -50,7 +53,8 @@ type ProjectDataset struct {
 	return storage, nil
 }
 
-// SaveTickets saves a batch of tickets to storagefunc (s *Storage) SaveTickets(projectKey string, tickets []TicketData) error {
+// SaveTickets saves a batch of tickets to storage
+func (s *Storage) SaveTickets(projectKey string, tickets []TicketData) error {
 	dataset, err := s.LoadProjectDataset(projectKey)
 	if err != nil {
 		dataset = &ProjectDataset{
@@ -82,7 +86,8 @@ type ProjectDataset struct {
 	return s.SaveProjectDataset(dataset)
 }
 
-// LoadProjectDataset loads the dataset for a specific projectfunc (s *Storage) LoadProjectDataset(projectKey string) (*ProjectDataset, error) {
+// LoadProjectDataset loads the dataset for a specific project
+func (s *Storage) LoadProjectDataset(projectKey string) (*ProjectDataset, error) {
 	filePath := s.getProjectFilePath(projectKey)
 	
 	data, err := ioutil.ReadFile(filePath)
@@ -109,7 +114,8 @@ type ProjectDataset struct {
 	return &dataset, nil
 }
 
-// SaveProjectDataset saves the complete dataset for a projectfunc (s *Storage) SaveProjectDataset(dataset *ProjectDataset) error {
+// SaveProjectDataset saves the complete dataset for a project
+func (s *Storage) SaveProjectDataset(dataset *ProjectDataset) error {
 	filePath := s.getProjectFilePath(dataset.ProjectKey)
 	
 	// Create backup before saving
@@ -136,7 +142,8 @@ type ProjectDataset struct {
 	return nil
 }
 
-// GetLastUpdateTime returns the last update time for a projectfunc (s *Storage) GetLastUpdateTime(projectKey string) (time.Time, error) {
+// GetLastUpdateTime returns the last update time for a project
+func (s *Storage) GetLastUpdateTime(projectKey string) (time.Time, error) {
 	dataset, err := s.LoadProjectDataset(projectKey)
 	if err != nil {
 		return time.Time{}, err
@@ -144,7 +151,8 @@ type ProjectDataset struct {
 	return dataset.LastUpdate, nil
 }
 
-// GetTicketKeys returns all ticket keys for a projectfunc (s *Storage) GetTicketKeys(projectKey string) ([]string, error) {
+// GetTicketKeys returns all ticket keys for a project
+func (s *Storage) GetTicketKeys(projectKey string) ([]string, error) {
 	dataset, err := s.LoadProjectDataset(projectKey)
 	if err != nil {
 		return nil, err
@@ -158,7 +166,8 @@ type ProjectDataset struct {
 	return keys, nil
 }
 
-// GetTicketsUpdatedSince returns tickets updated since a specific timefunc (s *Storage) GetTicketsUpdatedSince(projectKey string, since time.Time) ([]*TicketData, error) {
+// GetTicketsUpdatedSince returns tickets updated since a specific time
+func (s *Storage) GetTicketsUpdatedSince(projectKey string, since time.Time) ([]*TicketData, error) {
 	dataset, err := s.LoadProjectDataset(projectKey)
 	if err != nil {
 		return nil, err
@@ -174,7 +183,8 @@ type ProjectDataset struct {
 	return tickets, nil
 }
 
-// CleanupOldData removes old data based on retention policyfunc (s *Storage) CleanupOldData() error {
+// CleanupOldData removes old data based on retention policy
+func (s *Storage) CleanupOldData() error {
 	if s.config.RetentionDays <= 0 {
 		return nil
 	}

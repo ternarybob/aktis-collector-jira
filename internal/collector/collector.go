@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	plugin "github.com/ternarybob/aktis-plugin-sdk"
@@ -18,7 +19,8 @@ type JiraCollector struct {
 	startTime time.Time
 }
 
-// NewJiraCollector creates a new Jira collector instancefunc NewJiraCollector(config *Config) (*JiraCollector, error) {
+// NewJiraCollector creates a new Jira collector instance
+func NewJiraCollector(config *Config) (*JiraCollector, error) {
 	storage, err := NewStorage(&config.Storage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
@@ -31,7 +33,8 @@ type JiraCollector struct {
 	}, nil
 }
 
-// CollectAllTickets collects all tickets from configured projects in batchesfunc (jc *JiraCollector) CollectAllTickets(batchSize int) ([]plugin.Payload, error) {
+// CollectAllTickets collects all tickets from configured projects in batches
+func (jc *JiraCollector) CollectAllTickets(batchSize int) ([]plugin.Payload, error) {
 	jc.startTime = time.Now()
 	var allPayloads []plugin.Payload
 
@@ -46,7 +49,8 @@ type JiraCollector struct {
 	return allPayloads, nil
 }
 
-// UpdateTickets collects only tickets that have been updated since last collectionfunc (jc *JiraCollector) UpdateTickets(batchSize int) ([]plugin.Payload, error) {
+// UpdateTickets collects only tickets that have been updated since last collection
+func (jc *JiraCollector) UpdateTickets(batchSize int) ([]plugin.Payload, error) {
 	jc.startTime = time.Now()
 	var allPayloads []plugin.Payload
 
@@ -206,7 +210,8 @@ func (jc *JiraCollector) generateDataHash(data map[string]interface{}) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 characters
 }
 
-// GetCollectionStats returns statistics about the collected datafunc (jc *JiraCollector) GetCollectionStats() (map[string]interface{}, error) {
+// GetCollectionStats returns statistics about the collected data
+func (jc *JiraCollector) GetCollectionStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 	
 	for _, project := range jc.config.Projects {
@@ -224,6 +229,7 @@ func (jc *JiraCollector) generateDataHash(data map[string]interface{}) string {
 	return stats, nil
 }
 
-// Cleanup performs maintenance tasksfunc (jc *JiraCollector) Cleanup() error {
+// Cleanup performs maintenance tasks
+func (jc *JiraCollector) Cleanup() error {
 	return jc.storage.CleanupOldData()
 }

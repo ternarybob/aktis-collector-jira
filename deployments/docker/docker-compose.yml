@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  aktis-collector-jira:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        IMAGE_TAG: ${IMAGE_TAG:-latest}
+    image: aktis-collector-jira:${IMAGE_TAG:-latest}
+    container_name: aktis-collector-jira
+    restart: unless-stopped
+
+    # Environment configuration
+    environment:
+      # Mode configuration
+      - MODE=production
+      - LOG_LEVEL=info
+      - LOG_OUTPUT=both
+
+      # Jira configuration (override with your values)
+      - JIRA_BASE_URL=${JIRA_BASE_URL:-https://your-company.atlassian.net}
+      - JIRA_USERNAME=${JIRA_USERNAME:-your-email@company.com}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN:-your-api-token}
+      - JIRA_TIMEOUT=${JIRA_TIMEOUT:-30}
+
+      # Storage configuration
+      - DATA_DIR=/app/data
+      - BACKUP_DIR=/app/backups
+
+    # Volume mounts for persistent data
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+      - ./config.json:/app/config.json:ro
+
+    # Command override for different collection modes
+    command: ["./aktis-collector-jira", "-config", "/app/config.json", "-mode", "prod"]
+
+    # Optional: override for update mode
+    # command: ["./aktis-collector-jira", "-config", "/app/config.json", "-mode", "prod", "-update"]
+
+    # Network configuration
+    networks:
+      - aktis-network
+
+# Create external network if it doesn't exist
+networks:
+  aktis-network:
+    external: true
+    name: aktis-network
+
+# Create named volumes for easier management
+volumes:
+  collector-data:
+    driver: local
+  collector-logs:
+    driver: local
+  collector-backups:
+    driver: local

@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,28 +10,32 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// JiraClient handles Jira API interactionstype JiraClient struct {
+// JiraClient handles Jira API interactions
+type JiraClient struct {
 	client   *resty.Client
 	baseURL  string
 	username string
 	apiToken string
 }
 
-// JiraIssue represents a Jira ticket/issuetype JiraIssue struct {
+// JiraIssue represents a Jira ticket/issue
+type JiraIssue struct {
 	Key     string                 `json:"key"`
 	ID      string                 `json:"id"`
 	Self    string                 `json:"self"`
 	Fields  map[string]interface{} `json:"fields"`
 }
 
-// JiraSearchResponse represents the Jira search API responsetype JiraSearchResponse struct {
+// JiraSearchResponse represents the Jira search API response
+type JiraSearchResponse struct {
 	StartAt    int          `json:"startAt"`
 	MaxResults int          `json:"maxResults"`
 	Total      int          `json:"total"`
 	Issues     []JiraIssue  `json:"issues"`
 }
 
-// NewJiraClient creates a new Jira API clientfunc NewJiraClient(config *JiraConfig) *JiraClient {
+// NewJiraClient creates a new Jira API client
+func NewJiraClient(config *JiraConfig) *JiraClient {
 	client := resty.New().
 		SetBaseURL(config.BaseURL).
 		SetBasicAuth(config.Username, config.APIToken).
@@ -48,7 +51,8 @@ import (
 	}
 }
 
-// SearchIssues searches for Jira issues using JQLfunc (jc *JiraClient) SearchIssues(jql string, startAt int, maxResults int) (*JiraSearchResponse, error) {
+// SearchIssues searches for Jira issues using JQL
+func (jc *JiraClient) SearchIssues(jql string, startAt int, maxResults int) (*JiraSearchResponse, error) {
 	var response JiraSearchResponse
 	
 	resp, err := jc.client.R().
@@ -70,7 +74,8 @@ import (
 	return &response, nil
 }
 
-// GetIssue retrieves a single issue by keyfunc (jc *JiraClient) GetIssue(key string) (*JiraIssue, error) {
+// GetIssue retrieves a single issue by key
+func (jc *JiraClient) GetIssue(key string) (*JiraIssue, error) {
 	var issue JiraIssue
 	
 	resp, err := jc.client.R().
@@ -89,7 +94,8 @@ import (
 	return &issue, nil
 }
 
-// BuildJQL constructs a JQL query for a project and filtersfunc BuildJQL(project ProjectConfig, updatedSince time.Time) string {
+// BuildJQL constructs a JQL query for a project and filters
+func BuildJQL(project ProjectConfig, updatedSince time.Time) string {
 	parts := []string{fmt.Sprintf("project = %s", project.Key)}
 
 	// Add issue type filter
@@ -118,7 +124,8 @@ import (
 	return strings.Join(parts, " AND ")
 }
 
-// ExtractIssueData extracts relevant data from a Jira issuefunc ExtractIssueData(issue *JiraIssue) map[string]interface{} {
+// ExtractIssueData extracts relevant data from a Jira issue
+func ExtractIssueData(issue *JiraIssue) map[string]interface{} {
 	data := make(map[string]interface{})
 	
 	// Basic fields
@@ -217,7 +224,8 @@ import (
 	return data
 }
 
-// GetIssueChangelog retrieves the changelog for an issuefunc (jc *JiraClient) GetIssueChangelog(key string) ([]interface{}, error) {
+// GetIssueChangelog retrieves the changelog for an issue
+func (jc *JiraClient) GetIssueChangelog(key string) ([]interface{}, error) {
 	var changelog map[string]interface{}
 	
 	resp, err := jc.client.R().

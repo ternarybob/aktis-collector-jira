@@ -2,7 +2,23 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(gofmt:*)"
+      "Bash(gofmt:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Read(//c/development/aktis/aktis-collector-performance/**)",
+      "Read(//c/development/aktis/aktis-receiver/**)",
+      "Bash(tree:*)",
+      "Bash(go mod:*)",
+      "Bash(go build:*)",
+      "Bash(powershell:*)",
+      "Bash(./aktis-collector-performance.exe -version)",
+      "Bash(./aktis-collector-performance.exe -help)",
+      "Bash(chmod:*)",
+      "Bash(.aktis-collector-jira.exe:*)",
+      "Bash(\"./aktis-collector-jira.exe\" -version)",
+      "Bash(powershell.exe:*)",
+      "Bash(\"./bin/aktis-collector-jira.exe\" -version)",
+      "Bash(\"./bin/aktis-collector-jira.exe\" -help)"
     ],
     "deny": [],
     "ask": []

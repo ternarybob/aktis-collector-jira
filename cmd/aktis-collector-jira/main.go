@@ -8,61 +8,106 @@ import (
 	"strings"
 	"time"
 
+	"aktis-collector-jira/internal/common"
+	"aktis-collector-jira/internal/collector"
 	plugin "github.com/ternarybob/aktis-plugin-sdk"
-	"github.com/ternarybob/jira-collector/internal/collector"
 )
 
 const (
-	pluginName    = "jira-collector"
+	pluginName    = "aktis-collector-jira"
 	pluginVersion = "1.0.0"
 )
 
 func main() {
-	// Standard command line flags
-	mode := flag.String("mode", "dev", "Environment mode: 'dev', 'development', 'prod', or 'production'")
-	configFile := flag.String("config", "", "Configuration file path")
-	quiet := flag.Bool("quiet", false, "Suppress banner output")
-	version := flag.Bool("version", false, "Show version information")
-	help := flag.Bool("help", false, "Show help message")
-	update := flag.Bool("update", false, "Run in update mode (fetch only latest changes)")
-	batchSize := flag.Int("batch-size", 50, "Number of tickets to process in each batch")
+	// Parse command line flags
+	var (
+		configPath     = flag.String("config", "", "Path to configuration file")
+		mode           = flag.String("mode", "dev", "Environment mode: 'dev', 'development', 'prod', or 'production'")
+		quiet          = flag.Bool("quiet", false, "Suppress banner output")
+		version        = flag.Bool("version", false, "Show version information")
+		help           = flag.Bool("help", false, "Show help message")
+		update         = flag.Bool("update", false, "Run in update mode (fetch only latest changes)")
+		batchSize      = flag.Int("batch-size", 50, "Number of tickets to process in each batch")
+		validateConfig = flag.Bool("validate", false, "Validate configuration file and exit")
+	)
 	flag.Parse()
 
-	// Handle version and help
+	// Handle version flag
 	if *version {
-		fmt.Printf("%s v%s\n", pluginName, pluginVersion)
-		return
+		fmt.Printf("%s v%s (build: %s)\n", pluginName, common.GetVersion(), common.GetBuild())
+		os.Exit(0)
 	}
+
+	// Handle help flag
 	if *help {
 		showHelp()
-		return
+		os.Exit(0)
 	}
 
 	// Parse environment from mode
 	environment := parseMode(*mode)
 
-	// Load configuration
-	cfg, err := collector.LoadConfig(*configFile)
+	// Load configuration with priority: defaults -> JSON -> environment -> command line
+	cfg, err := common.LoadFromFile(*configPath)
 	if err != nil {
-		handleError(err, *quiet, environment, time.Now())
-		return
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Show banner unless quiet
+	// Handle validate flag
+	if *validateConfig {
+		fmt.Println("Configuration is valid")
+		os.Exit(0)
+	}
+
+	// Initialize logger with config before any logging operations
+	if err := common.InitLogger(&cfg.Logging); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Now get the configured logger
+	logger := common.GetLogger()
+
+	// Log startup information first to ensure log file is created
+	logger.Info().
+		Str("version", common.GetVersion()).
+		Str("build", common.GetBuild()).
+		Str("environment", environment).
+		Msg("Starting Aktis Collector Jira Service")
+
+	logger.Info().
+		Str("config_path", *configPath).
+		Msg("Configuration loaded")
+
+	// Display startup banner after initial log messages (to ensure log file exists)
 	if !*quiet {
-		showBanner(environment, *update)
+		collectionMode := "Collection"
+		if *update {
+			collectionMode = "Update"
+		}
+		logFilePath := common.GetLogFilePath()
+		common.PrintBanner(pluginName, environment, collectionMode, logFilePath)
 	}
 
 	startTime := time.Now()
 
 	// Initialize Jira collector
-	jiraCollector, err := collector.NewJiraCollector(cfg)
+	logger.Info().Msg("Initializing Jira collector...")
+	jiraCollector, err := collector.NewJiraCollector(cfg.GetCollectorConfig())
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to initialize Jira collector")
 		handleError(err, *quiet, environment, startTime)
 		return
 	}
+	logger.Info().Msg("Jira collector initialized successfully")
 
 	// Collect data based on mode
+	logger.Info().
+		Str("mode", fmt.Sprintf("update=%t", *update)).
+		Str("batch_size", fmt.Sprintf("%d", *batchSize)).
+		Msg("Starting data collection")
+
 	var payloads []plugin.Payload
 	if *update {
 		payloads, err = jiraCollector.UpdateTickets(*batchSize)
@@ -71,9 +116,15 @@ func main() {
 	}
 
 	if err != nil {
+		logger.Error().Err(err).Msg("Data collection failed")
 		handleError(err, *quiet, environment, startTime)
 		return
 	}
+
+	logger.Info().
+		Str("payload_count", fmt.Sprintf("%d", len(payloads))).
+		Str("duration", time.Since(startTime).String()).
+		Msg("Data collection completed successfully")
 
 	// Build successful output
 	output := plugin.CollectorOutput{
@@ -99,6 +150,8 @@ func main() {
 		// Human-readable CLI output
 		displayResults(output, *update)
 	}
+
+	logger.Info().Msg("Aktis Collector Jira Service shutdown complete")
 }
 
 func parseMode(mode string) string {
@@ -113,14 +166,12 @@ func parseMode(mode string) string {
 	}
 }
 
-func showBanner(environment string, updateMode bool) {
-	mode := "Collection"
-	if updateMode {
-		mode = "Update"
+func fileExists(path string) bool {
+	if path == "" {
+		return false
 	}
-	fmt.Printf("🎯 %s v%s (%s Mode)\n", pluginName, pluginVersion, mode)
-	fmt.Printf("📍 Environment: %s\n", environment)
-	fmt.Printf("⏰ Started: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func showHelp() {
@@ -135,6 +186,7 @@ func showHelp() {
 	fmt.Println("  -help               Show help message")
 	fmt.Println("  -update             Run in update mode (fetch only latest changes)")
 	fmt.Println("  -batch-size int     Number of tickets to process in each batch (default 50)")
+	fmt.Println("  -validate           Validate configuration file and exit")
 	fmt.Println("\nExamples:")
 	fmt.Printf("  %s                                  # Run in development mode\n", os.Args[0])
 	fmt.Printf("  %s -mode prod                       # Run in production mode\n", os.Args[0])
