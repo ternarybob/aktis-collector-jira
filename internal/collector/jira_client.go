@@ -20,18 +20,18 @@ type JiraClient struct {
 
 // JiraIssue represents a Jira ticket/issue
 type JiraIssue struct {
-	Key     string                 `json:"key"`
-	ID      string                 `json:"id"`
-	Self    string                 `json:"self"`
-	Fields  map[string]interface{} `json:"fields"`
+	Key    string                 `json:"key"`
+	ID     string                 `json:"id"`
+	Self   string                 `json:"self"`
+	Fields map[string]interface{} `json:"fields"`
 }
 
 // JiraSearchResponse represents the Jira search API response
 type JiraSearchResponse struct {
-	StartAt    int          `json:"startAt"`
-	MaxResults int          `json:"maxResults"`
-	Total      int          `json:"total"`
-	Issues     []JiraIssue  `json:"issues"`
+	StartAt    int         `json:"startAt"`
+	MaxResults int         `json:"maxResults"`
+	Total      int         `json:"total"`
+	Issues     []JiraIssue `json:"issues"`
 }
 
 // NewJiraClient creates a new Jira API client
@@ -39,7 +39,7 @@ func NewJiraClient(config *JiraConfig) *JiraClient {
 	client := resty.New().
 		SetBaseURL(config.BaseURL).
 		SetBasicAuth(config.Username, config.APIToken).
-		SetTimeout(time.Duration(config.Timeout) * time.Second).
+		SetTimeout(time.Duration(config.Timeout)*time.Second).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Accept", "application/json")
 
@@ -54,7 +54,7 @@ func NewJiraClient(config *JiraConfig) *JiraClient {
 // SearchIssues searches for Jira issues using JQL
 func (jc *JiraClient) SearchIssues(jql string, startAt int, maxResults int) (*JiraSearchResponse, error) {
 	var response JiraSearchResponse
-	
+
 	resp, err := jc.client.R().
 		SetQueryParam("jql", jql).
 		SetQueryParam("startAt", strconv.Itoa(startAt)).
@@ -77,7 +77,7 @@ func (jc *JiraClient) SearchIssues(jql string, startAt int, maxResults int) (*Ji
 // GetIssue retrieves a single issue by key
 func (jc *JiraClient) GetIssue(key string) (*JiraIssue, error) {
 	var issue JiraIssue
-	
+
 	resp, err := jc.client.R().
 		SetQueryParam("fields", "*all").
 		SetResult(&issue).
@@ -127,39 +127,39 @@ func BuildJQL(project ProjectConfig, updatedSince time.Time) string {
 // ExtractIssueData extracts relevant data from a Jira issue
 func ExtractIssueData(issue *JiraIssue) map[string]interface{} {
 	data := make(map[string]interface{})
-	
+
 	// Basic fields
 	data["key"] = issue.Key
 	data["id"] = issue.ID
 	data["self"] = issue.Self
-	
+
 	// Extract common fields
 	if summary, ok := issue.Fields["summary"].(string); ok {
 		data["summary"] = summary
 	}
-	
+
 	if description, ok := issue.Fields["description"].(string); ok {
 		data["description"] = description
 	}
-	
+
 	if issueType, ok := issue.Fields["issuetype"].(map[string]interface{}); ok {
 		if name, ok := issueType["name"].(string); ok {
 			data["issue_type"] = name
 		}
 	}
-	
+
 	if status, ok := issue.Fields["status"].(map[string]interface{}); ok {
 		if name, ok := status["name"].(string); ok {
 			data["status"] = name
 		}
 	}
-	
+
 	if priority, ok := issue.Fields["priority"].(map[string]interface{}); ok {
 		if name, ok := priority["name"].(string); ok {
 			data["priority"] = name
 		}
 	}
-	
+
 	if assignee, ok := issue.Fields["assignee"].(map[string]interface{}); ok {
 		if name, ok := assignee["displayName"].(string); ok {
 			data["assignee"] = name
@@ -167,7 +167,7 @@ func ExtractIssueData(issue *JiraIssue) map[string]interface{} {
 			data["assignee"] = email
 		}
 	}
-	
+
 	if reporter, ok := issue.Fields["reporter"].(map[string]interface{}); ok {
 		if name, ok := reporter["displayName"].(string); ok {
 			data["reporter"] = name
@@ -175,15 +175,15 @@ func ExtractIssueData(issue *JiraIssue) map[string]interface{} {
 			data["reporter"] = email
 		}
 	}
-	
+
 	if created, ok := issue.Fields["created"].(string); ok {
 		data["created"] = created
 	}
-	
+
 	if updated, ok := issue.Fields["updated"].(string); ok {
 		data["updated"] = updated
 	}
-	
+
 	if project, ok := issue.Fields["project"].(map[string]interface{}); ok {
 		if key, ok := project["key"].(string); ok {
 			data["project_key"] = key
@@ -192,42 +192,42 @@ func ExtractIssueData(issue *JiraIssue) map[string]interface{} {
 			data["project_name"] = name
 		}
 	}
-	
+
 	// Extract custom fields
 	if customFields, ok := issue.Fields["customfield_10001"]; ok {
 		data["custom_field_10001"] = customFields
 	}
-	
+
 	// Extract labels
 	if labels, ok := issue.Fields["labels"].([]interface{}); ok {
 		data["labels"] = labels
 	}
-	
+
 	// Extract components
 	if components, ok := issue.Fields["components"].([]interface{}); ok {
 		data["components"] = components
 	}
-	
+
 	// Extract fix versions
 	if fixVersions, ok := issue.Fields["fixVersions"].([]interface{}); ok {
 		data["fix_versions"] = fixVersions
 	}
-	
+
 	// Extract affected versions
 	if versions, ok := issue.Fields["versions"].([]interface{}); ok {
 		data["versions"] = versions
 	}
-	
+
 	// Store raw fields for reference
 	data["raw_fields"] = issue.Fields
-	
+
 	return data
 }
 
 // GetIssueChangelog retrieves the changelog for an issue
 func (jc *JiraClient) GetIssueChangelog(key string) ([]interface{}, error) {
 	var changelog map[string]interface{}
-	
+
 	resp, err := jc.client.R().
 		SetResult(&changelog).
 		Get(fmt.Sprintf("/rest/api/3/issue/%s/changelog", key))

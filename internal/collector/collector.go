@@ -148,10 +148,10 @@ func (jc *JiraCollector) collectUpdatedTickets(project ProjectConfig, since time
 				Type:      fmt.Sprintf("jira_%s", jc.getIssueType(&issue)),
 				Data:      ticket.Data,
 				Metadata: map[string]string{
-					"project":   project.Key,
-					"ticket_id": issue.Key,
-					"source":    "jira",
-					"mode":      "update",
+					"project":       project.Key,
+					"ticket_id":     issue.Key,
+					"source":        "jira",
+					"mode":          "update",
 					"updated_since": since.Format(time.RFC3339),
 				},
 			}
@@ -178,10 +178,10 @@ func (jc *JiraCollector) collectUpdatedTickets(project ProjectConfig, since time
 
 func (jc *JiraCollector) issueToTicketData(issue *JiraIssue, projectKey string) TicketData {
 	data := ExtractIssueData(issue)
-	
+
 	// Generate hash for change detection
 	hash := jc.generateDataHash(data)
-	
+
 	return TicketData{
 		Key:     issue.Key,
 		Project: projectKey,
@@ -205,7 +205,7 @@ func (jc *JiraCollector) generateDataHash(data map[string]interface{}) string {
 	if err != nil {
 		return ""
 	}
-	
+
 	hash := sha256.Sum256(jsonData)
 	return hex.EncodeToString(hash[:8]) // Use first 8 characters
 }
@@ -213,19 +213,19 @@ func (jc *JiraCollector) generateDataHash(data map[string]interface{}) string {
 // GetCollectionStats returns statistics about the collected data
 func (jc *JiraCollector) GetCollectionStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
-	
+
 	for _, project := range jc.config.Projects {
 		dataset, err := jc.storage.LoadProjectDataset(project.Key)
 		if err != nil {
 			continue
 		}
-		
+
 		stats[project.Key] = map[string]interface{}{
 			"total_tickets": dataset.TotalCount,
 			"last_update":   dataset.LastUpdate,
 		}
 	}
-	
+
 	return stats, nil
 }
 

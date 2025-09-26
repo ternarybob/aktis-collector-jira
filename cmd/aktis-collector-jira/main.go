@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"aktis-collector-jira/internal/common"
 	"aktis-collector-jira/internal/collector"
+	"aktis-collector-jira/internal/common"
 	plugin "github.com/ternarybob/aktis-plugin-sdk"
 )
 
