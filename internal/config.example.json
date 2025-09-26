@@ -1,0 +1,32 @@
+{
+  "jira": {
+    "base_url": "https://your-company.atlassian.net",
+    "username": "your-email@company.com",
+    "api_token": "your-jira-api-token",
+    "timeout_seconds": 30
+  },
+  "projects": [
+    {
+      "key": "DEV",
+      "name": "Development Project",
+      "issue_types": ["Bug", "Story", "Task", "Epic", "Sub-task"],
+      "statuses": ["To Do", "In Progress", "In Review", "Done", "Closed"],
+      "max_results": 1000,
+      "include_history": true
+    },
+    {
+      "key": "PROJ",
+      "name": "Product Project", 
+      "issue_types": ["Bug", "Feature", "Improvement", "Task"],
+      "statuses": ["Open", "In Progress", "Resolved", "Closed"],
+      "max_results": 500,
+      "include_history": false
+    }
+  ],
+  "storage": {
+    "data_dir": "./data",
+    "backup_dir": "./backups",
+    "max_file_size_mb": 100,
+    "retention_days": 90
+  }
+}
