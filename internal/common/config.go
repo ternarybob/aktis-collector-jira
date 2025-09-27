@@ -3,74 +3,152 @@ package common
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
-	"aktis-collector-jira/internal/collector"
+	"github.com/pelletier/go-toml/v2"
 )
 
-// AppConfig holds the complete application configuration
-type AppConfig struct {
-	Collector *collector.Config `json:"collector"`
-	Logging   LoggingConfig     `json:"logging"`
+type Config struct {
+	Collector      CollectorConfig          `toml:"collector"`
+	Jira           JiraConfig               `toml:"jira"`
+	ProjectsList   ProjectsList             `toml:"projects"`
+	ProjectConfigs map[string]ProjectConfig `toml:",inline"`
+	Projects       []ProjectConfig          `toml:"-"`
+	Storage        StorageConfig            `toml:"storage"`
+	Logging        LoggingConfig            `toml:"logging"`
 }
 
-// LoggingConfig holds logging configuration
+type CollectorConfig struct {
+	Name        string `toml:"name"`
+	Environment string `toml:"environment"`
+	SendLimit   int    `toml:"send_limit"`
+	WebPort     int    `toml:"web_port"`
+}
+
+type JiraConfig struct {
+	BaseURL  string `toml:"base_url"`
+	Username string `toml:"username"`
+	APIToken string `toml:"api_token"`
+	Timeout  int    `toml:"timeout_seconds"`
+}
+
+type ProjectsList struct {
+	Projects []string `toml:"projects"`
+}
+
+type ProjectConfig struct {
+	Key            string   `toml:"-"`
+	Name           string   `toml:"name"`
+	IssueTypes     []string `toml:"issue_types"`
+	Statuses       []string `toml:"statuses"`
+	MaxResults     int      `toml:"max_results"`
+	IncludeHistory bool     `toml:"include_history"`
+}
+
+type StorageConfig struct {
+	DatabasePath  string `toml:"database_path"`
+	BackupDir     string `toml:"backup_dir"`
+	RetentionDays int    `toml:"retention_days"`
+}
+
 type LoggingConfig struct {
-	Level      string `json:"level"`
-	Format     string `json:"format"`
-	Output     string `json:"output"`
-	MaxSize    int    `json:"max_size"`
-	MaxBackups int    `json:"max_backups"`
+	Level      string `toml:"level"`
+	Format     string `toml:"format"`
+	Output     string `toml:"output"`
+	MaxSize    int    `toml:"max_size"`
+	MaxBackups int    `toml:"max_backups"`
 }
 
-// DefaultAppConfig returns a configuration with sensible defaults
-func DefaultAppConfig() *AppConfig {
-	return &AppConfig{
-		Collector: getDefaultCollectorConfig(),
+func DefaultConfig() *Config {
+	execPath, _ := os.Executable()
+	execDir := filepath.Dir(execPath)
+	execName := filepath.Base(execPath)
+	execName = execName[:len(execName)-len(filepath.Ext(execName))]
+
+	defaultDBPath := filepath.Join(execDir, "data", execName+".db")
+
+	return &Config{
+		Collector: CollectorConfig{
+			Name:        "aktis-collector-jira",
+			Environment: "development",
+			SendLimit:   100,
+			WebPort:     8080,
+		},
+		Jira: JiraConfig{
+			BaseURL:  "https://your-company.atlassian.net",
+			Username: "your-email@company.com",
+			APIToken: "your-api-token",
+			Timeout:  30,
+		},
+		Projects: []ProjectConfig{
+			{
+				Key:            "PROJ",
+				Name:           "Main Project",
+				IssueTypes:     []string{"Bug", "Story", "Task", "Epic"},
+				Statuses:       []string{"To Do", "In Progress", "In Review", "Done"},
+				MaxResults:     1000,
+				IncludeHistory: true,
+			},
+		},
+		Storage: StorageConfig{
+			DatabasePath:  defaultDBPath,
+			BackupDir:     "./backups",
+			RetentionDays: 90,
+		},
 		Logging: LoggingConfig{
 			Level:      "info",
 			Format:     "text",
 			Output:     "both",
-			MaxSize:    100, // MB
+			MaxSize:    100,
 			MaxBackups: 3,
 		},
 	}
 }
 
-func getDefaultCollectorConfig() *collector.Config {
-	return collector.DefaultConfig()
-}
+func LoadConfig(configFile string) (*Config, error) {
+	config := DefaultConfig()
 
-// LoadFromFile loads configuration with priority: defaults -> JSON -> environment -> command line
-func LoadFromFile(filename string) (*AppConfig, error) {
-	return loadConfigWithPriority(filename)
-}
-
-// LoadConfig loads configuration with priority: defaults -> JSON -> environment -> command line
-func LoadConfig(filename string) (*AppConfig, error) {
-	return loadConfigWithPriority(filename)
-}
-
-// loadConfigWithPriority implements the priority loading pattern
-func loadConfigWithPriority(filename string) (*AppConfig, error) {
-	// 1. Start with defaults
-	config := DefaultAppConfig()
-
-	// 2. Load collector configuration if file exists (JSON format for now)
-	if filename != "" {
-		collectorConfig, err := collector.LoadConfig(filename)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load collector config: %w", err)
-		}
-		config.Collector = collectorConfig
+	if configFile == "" {
+		return config, nil
 	}
 
-	// 3. Apply environment variable overrides
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file %s: %w", configFile, err)
+	}
+
+	var rawConfig map[string]interface{}
+	if err := toml.Unmarshal(data, &rawConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if err := toml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if len(config.ProjectsList.Projects) > 0 {
+		config.Projects = make([]ProjectConfig, 0, len(config.ProjectsList.Projects))
+		for _, projectKey := range config.ProjectsList.Projects {
+			if projectData, ok := rawConfig[projectKey]; ok {
+				var projectConfig ProjectConfig
+				projectBytes, err := toml.Marshal(projectData)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal project %s: %w", projectKey, err)
+				}
+				if err := toml.Unmarshal(projectBytes, &projectConfig); err != nil {
+					return nil, fmt.Errorf("failed to parse project %s: %w", projectKey, err)
+				}
+				projectConfig.Key = projectKey
+				config.Projects = append(config.Projects, projectConfig)
+			} else {
+				return nil, fmt.Errorf("project %s listed but configuration not found", projectKey)
+			}
+		}
+	}
+
 	applyEnvOverrides(config)
 
-	// 4. Command line overrides would be applied by the caller (main.go)
-
-	// 5. Validate final configuration
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -78,38 +156,34 @@ func loadConfigWithPriority(filename string) (*AppConfig, error) {
 	return config, nil
 }
 
-// applyEnvOverrides applies environment variable overrides to configuration
-func applyEnvOverrides(config *AppConfig) {
-	// Jira configuration overrides
+func applyEnvOverrides(config *Config) {
 	if jiraURL := os.Getenv("JIRA_BASE_URL"); jiraURL != "" {
-		config.Collector.Jira.BaseURL = jiraURL
+		config.Jira.BaseURL = jiraURL
 	}
 	if jiraUsername := os.Getenv("JIRA_USERNAME"); jiraUsername != "" {
-		config.Collector.Jira.Username = jiraUsername
+		config.Jira.Username = jiraUsername
 	}
 	if jiraToken := os.Getenv("JIRA_API_TOKEN"); jiraToken != "" {
-		config.Collector.Jira.APIToken = jiraToken
+		config.Jira.APIToken = jiraToken
 	}
 	if timeoutStr := os.Getenv("JIRA_TIMEOUT"); timeoutStr != "" {
 		if timeout, err := strconv.Atoi(timeoutStr); err == nil {
-			config.Collector.Jira.Timeout = timeout
+			config.Jira.Timeout = timeout
 		}
 	}
 
-	// Storage configuration overrides
 	if dbPath := os.Getenv("DATABASE_PATH"); dbPath != "" {
-		config.Collector.Storage.DatabasePath = dbPath
+		config.Storage.DatabasePath = dbPath
 	}
 	if backupDir := os.Getenv("BACKUP_DIR"); backupDir != "" {
-		config.Collector.Storage.BackupDir = backupDir
+		config.Storage.BackupDir = backupDir
 	}
 	if sendLimit := os.Getenv("SEND_LIMIT"); sendLimit != "" {
 		if limit, err := strconv.Atoi(sendLimit); err == nil {
-			config.Collector.Collector.SendLimit = limit
+			config.Collector.SendLimit = limit
 		}
 	}
 
-	// Logging configuration overrides
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
 		config.Logging.Level = logLevel
 	}
@@ -121,14 +195,31 @@ func applyEnvOverrides(config *AppConfig) {
 	}
 }
 
-// Validate checks if the configuration is valid
-func (c *AppConfig) Validate() error {
-	// Validate collector config
-	if err := c.Collector.Validate(); err != nil {
-		return fmt.Errorf("collector config validation failed: %w", err)
+func (c *Config) Validate() error {
+	if c.Jira.BaseURL == "" {
+		return fmt.Errorf("jira base_url is required")
+	}
+	if c.Jira.Username == "" {
+		return fmt.Errorf("jira username is required")
+	}
+	if c.Jira.APIToken == "" {
+		return fmt.Errorf("jira api_token is required")
+	}
+	if len(c.Projects) == 0 {
+		return fmt.Errorf("at least one project must be configured")
+	}
+	for _, project := range c.Projects {
+		if project.Key == "" {
+			return fmt.Errorf("project key is required")
+		}
+	}
+	if c.Storage.DatabasePath == "" {
+		return fmt.Errorf("storage database_path is required")
+	}
+	if c.Collector.SendLimit <= 0 {
+		c.Collector.SendLimit = 100
 	}
 
-	// Validate logging config
 	validLogLevels := []string{"debug", "info", "warn", "error", "fatal", "panic"}
 	validLevel := false
 	for _, level := range validLogLevels {
@@ -156,13 +247,6 @@ func (c *AppConfig) Validate() error {
 	return nil
 }
 
-// GetCollectorConfig returns the collector configuration
-func (c *AppConfig) GetCollectorConfig() *collector.Config {
-	return c.Collector
-}
-
-// IsProduction returns true if running in production mode
-func (c *AppConfig) IsProduction() bool {
-	// Check if log level indicates production (warn, error, fatal)
+func (c *Config) IsProduction() bool {
 	return c.Logging.Level == "warn" || c.Logging.Level == "error" || c.Logging.Level == "fatal"
 }

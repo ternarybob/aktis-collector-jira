@@ -6,16 +6,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
-	"aktis-collector-jira/internal/collector"
 	"aktis-collector-jira/internal/common"
+	"aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/services"
 	plugin "github.com/ternarybob/aktis-plugin-sdk"
+	"github.com/ternarybob/arbor"
 )
 
 const (
@@ -34,6 +39,7 @@ func main() {
 		update         = flag.Bool("update", false, "Run in update mode (fetch only latest changes)")
 		batchSize      = flag.Int("batch-size", 50, "Number of tickets to process in each batch")
 		validateConfig = flag.Bool("validate", false, "Validate configuration file and exit")
+		server         = flag.Bool("server", false, "Run in server mode with web interface")
 	)
 	flag.Parse()
 
@@ -53,7 +59,7 @@ func main() {
 	environment := parseMode(*mode)
 
 	// Load configuration with priority: defaults -> TOML
-	cfg, err := collector.LoadConfig(*configPath)
+	cfg, err := common.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		os.Exit(1)
@@ -105,33 +111,90 @@ func main() {
 
 	startTime := time.Now()
 
-	// Initialize Jira collector
-	logger.Info().Msg("Initializing Jira collector...")
-	jiraCollector, err := collector.NewJiraCollector(cfg)
+	// Initialize services
+	logger.Info().Msg("Initializing services...")
+
+	// Create Jira client
+	jiraClient := services.NewJiraClient(&cfg.Jira)
+
+	// Create storage
+	storage, err := services.NewStorage(&cfg.Storage)
 	if err != nil {
-		logger.Error().Err(err).Msg("Failed to initialize Jira collector")
+		logger.Error().Err(err).Msg("Failed to initialize storage")
 		handleError(err, *quiet, environment, startTime)
 		return
 	}
-	defer jiraCollector.Close()
-	logger.Info().Msg("Jira collector initialized successfully")
+	defer storage.Close()
 
+	// Create collector
+	collector := services.NewCollector(cfg, jiraClient, storage)
+	defer collector.Close()
+
+	logger.Info().Msg("Services initialized successfully")
+
+	if *server {
+		// Server mode - start web server and run continuously
+		runServerMode(cfg, collector, storage, logger, environment)
+	} else {
+		// Single run mode - collect data and exit
+		runCollectionMode(collector, *update, *batchSize, *quiet, environment, startTime, logger)
+	}
+
+	logger.Info().Msg("Aktis Collector Jira Service shutdown complete")
+}
+
+func runServerMode(cfg *common.Config, collector interfaces.Collector, storage interfaces.Storage, logger arbor.ILogger, environment string) {
+	logger.Info().Msg("Starting in server mode")
+
+	// Create web server
+	webServer, err := services.NewWebServer(cfg, collector, storage, logger)
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to create web server")
+		return
+	}
+
+	// Start web server
+	ctx := context.Background()
+	if err := webServer.Start(ctx); err != nil {
+		logger.Error().Err(err).Msg("Failed to start web server")
+		return
+	}
+
+	logger.Info().
+		Int("port", cfg.Collector.WebPort).
+		Msg("Web server started successfully")
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	logger.Info().Msg("Server running - press Ctrl+C to stop")
+
+	// Wait for shutdown signal
+	<-sigChan
+	logger.Info().Msg("Shutdown signal received")
+
+	// Stop web server
+	if err := webServer.Stop(); err != nil {
+		logger.Error().Err(err).Msg("Error stopping web server")
+	}
+
+	logger.Info().Msg("Server mode shutdown complete")
+}
+
+func runCollectionMode(collector interfaces.Collector, update bool, batchSize int, quiet bool, environment string, startTime time.Time, logger arbor.ILogger) {
 	// Collect data based on mode
 	logger.Info().
-		Str("mode", fmt.Sprintf("update=%t", *update)).
-		Str("batch_size", fmt.Sprintf("%d", *batchSize)).
+		Str("mode", fmt.Sprintf("update=%t", update)).
+		Str("batch_size", fmt.Sprintf("%d", batchSize)).
 		Msg("Starting data collection")
 
 	var payloads []plugin.Payload
-	if *update {
-		payloads, err = jiraCollector.UpdateTickets(*batchSize)
-	} else {
-		payloads, err = jiraCollector.CollectAllTickets(*batchSize)
-	}
+	payloads, err := collector.CollectAllTickets(batchSize)
 
 	if err != nil {
 		logger.Error().Err(err).Msg("Data collection failed")
-		handleError(err, *quiet, environment, startTime)
+		handleError(err, quiet, environment, startTime)
 		return
 	}
 
@@ -157,15 +220,13 @@ func main() {
 		},
 	}
 
-	if *quiet {
+	if quiet {
 		// JSON output for aktis-collector
 		json.NewEncoder(os.Stdout).Encode(output)
 	} else {
 		// Human-readable CLI output
-		displayResults(output, *update)
+		displayResults(output, update)
 	}
-
-	logger.Info().Msg("Aktis Collector Jira Service shutdown complete")
 }
 
 func parseMode(mode string) string {
@@ -201,11 +262,13 @@ func showHelp() {
 	fmt.Println("  -update             Run in update mode (fetch only latest changes)")
 	fmt.Println("  -batch-size int     Number of tickets to process in each batch (default 50)")
 	fmt.Println("  -validate           Validate configuration file and exit")
+	fmt.Println("  -server             Run in server mode with web interface")
 	fmt.Println("\nExamples:")
 	fmt.Printf("  %s                                  # Run in development mode\n", os.Args[0])
 	fmt.Printf("  %s -mode prod                       # Run in production mode\n", os.Args[0])
 	fmt.Printf("  %s -update                          # Update existing tickets\n", os.Args[0])
 	fmt.Printf("  %s -config /path/to/config.json     # Use custom config file\n", os.Args[0])
+	fmt.Printf("  %s -server                          # Run with web interface on port 8080\n", os.Args[0])
 	fmt.Printf("  %s -quiet                           # JSON output for aktis-collector\n", os.Args[0])
 }
 

@@ -22,7 +22,13 @@
       "Bash(git log:*)",
       "Bash(./bin/aktis-collector-jira.exe:*)",
       "Bash(./aktis-collector-jira.exe -validate -config aktis-collector-jira.toml)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(cat:*)",
+      "Bash(git rm:*)",
+      "Bash(find:*)",
+      "Read(//c/development/aktis/aktis-collector/pages/**)",
+      "Read(//c/development/aktis/aktis-collector/internal/services/**)",
+      "Read(//c/development/aktis/aktis-collector/internal/handlers/**)"
     ],
     "deny": [],
     "ask": []

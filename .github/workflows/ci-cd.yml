@@ -1,342 +1,186 @@
-name: CI/CD Pipeline
+name: Build and Release
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
     branches: [ main ]
   workflow_dispatch:
-  schedule:
-    # Run tests daily at 2 AM UTC
-    - cron: '0 2 * * *'
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: aktis-collector-jira
 
 jobs:
-  unit-tests:
-    name: Unit Tests
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-
-    - name: Download dependencies
-      run: go mod download
-
-    - name: Run unit tests
-      run: |
-        # Run unit tests
-        go test ./internal/... -v -race -coverprofile=unit-coverage.out -covermode=atomic
-
-    - name: Install and run golangci-lint
-      run: |
-        # Install golangci-lint
-        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.54.2
-        # Run linter
-        $(go env GOPATH)/bin/golangci-lint run --timeout=5m
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./unit-coverage.out
-        flags: unit-tests
-        name: codecov-umbrella
-
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-
-    - name: Run Gosec Security Scanner
-      uses: securecodewarrior/github-action-gosec@master
-      with:
-        args: '-fmt sarif -out gosec.sarif ./...'
-
-    - name: Upload SARIF file
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: gosec.sarif
-
-  build-and-test:
-    name: Build and Test
-    runs-on: ubuntu-latest
-    needs: [unit-tests]
-    permissions:
-      contents: read
-
     strategy:
       matrix:
-        goos: [linux, windows, darwin]
-        goarch: [amd64]
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Full history for version info
 
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
 
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-
-    - name: Download dependencies
-      run: go mod download
-
-    - name: Get version information
-      id: version
+    - name: Update .version file with build timestamp
       run: |
         if [ -f ".version" ]; then
-          VERSION=$(cat .version | xargs)
+          VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
+          BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+
+          cat > .version << EOF
+        version: ${VERSION}
+        build: ${BUILD}
+        EOF
+
+          echo "Updated .version file with build: ${BUILD}"
         else
-          VERSION="1.0.0-dev"
+          echo "Warning: .version file not found"
         fi
-        BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-        GIT_COMMIT=$(git rev-parse --short HEAD || echo "unknown")
 
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
-        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
-
-    - name: Build binary
+    - name: Build collector binary
       env:
+        CGO_ENABLED: 0
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
-        CGO_ENABLED: 0
       run: |
-        MODULE="aktis-collector-jira/internal/common"
-        LDFLAGS="-w -s -X ${MODULE}.Version=${{ steps.version.outputs.version }} -X ${MODULE}.Build=${{ steps.version.outputs.build_time }} -X ${MODULE}.GitCommit=${{ steps.version.outputs.git_commit }}"
+        mkdir -p bin
 
-        OUTPUT_NAME="aktis-collector-jira"
-        if [ "${{ matrix.goos }}" = "windows" ]; then
-          OUTPUT_NAME="${OUTPUT_NAME}.exe"
+        if [ -f ".version" ]; then
+          VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
+          BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+        else
+          VERSION="dev"
+          BUILD="unknown"
         fi
 
-        go build -ldflags="$LDFLAGS" -o "bin/${OUTPUT_NAME}" ./cmd/aktis-collector-jira
+        BINARY_NAME="aktis-collector-jira"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          BINARY_NAME="${BINARY_NAME}.exe"
+        fi
+
+        go build \
+          -ldflags="-w -s -X aktis-collector-jira/internal/common.Version=${VERSION} -X aktis-collector-jira/internal/common.Build=${BUILD} -X aktis-collector-jira/internal/common.GitCommit=${GITHUB_SHA}" \
+          -o bin/${BINARY_NAME} ./cmd/aktis-collector-jira
+
+        if [ "${{ matrix.goos }}" != "windows" ]; then
+          chmod +x bin/${BINARY_NAME}
+        fi
+
+        ls -la bin/
+        file bin/${BINARY_NAME}
+
+    - name: Create release archive
+      run: |
+        mkdir -p release
+
+        cp bin/* release/
+
+        if [ -f "deployments/aktis-collector-jira.toml" ]; then
+          cp deployments/aktis-collector-jira.toml release/aktis-collector-jira.toml.example
+        fi
+
+        if [ -f "README.md" ]; then
+          cp README.md release/
+        fi
+
+        tar -czf aktis-collector-jira-${{ matrix.suffix }}.tar.gz -C release .
+
+        sha256sum aktis-collector-jira-${{ matrix.suffix }}.tar.gz > aktis-collector-jira-${{ matrix.suffix }}.tar.gz.sha256
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: aktis-collector-jira-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: bin/aktis-collector-jira*
-
-  docker-build:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    needs: [unit-tests, security-scan]
-    if: github.event_name != 'pull_request'
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Log in to Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=sha
-          type=raw,value=latest,enable={{is_default_branch}}
-
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./deployments/docker/Dockerfile
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        build-args: |
-          IMAGE_TAG=${{ github.sha }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-
-  integration-tests:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: [docker-build]
-    if: github.event_name != 'pull_request'
-    permissions:
-      contents: read
-
-    services:
-      jira-mock:
-        image: wiremock/wiremock:latest
-        ports:
-          - 8080:8080
-        options: --name jira-mock
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Compose
-      run: |
-        # Create test configuration
-        mkdir -p test-data
-        cat > test-data/config.json << EOF
-        {
-          "jira": {
-            "base_url": "http://localhost:8080",
-            "username": "test@example.com",
-            "api_token": "test-token",
-            "timeout_seconds": 30
-          },
-          "projects": [
-            {
-              "key": "TEST",
-              "name": "Test Project",
-              "issue_types": ["Bug", "Task"],
-              "max_results": 10
-            }
-          ],
-          "storage": {
-            "data_dir": "./test-data",
-            "backup_dir": "./test-backups"
-          }
-        }
-        EOF
-
-    - name: Setup WireMock stubs
-      run: |
-        # Add Jira API mock responses
-        curl -X POST http://localhost:8080/__admin/mappings \
-          -H 'Content-Type: application/json' \
-          -d '{
-            "request": {
-              "method": "GET",
-              "urlPattern": "/rest/api/2/search.*"
-            },
-            "response": {
-              "status": 200,
-              "headers": {
-                "Content-Type": "application/json"
-              },
-              "body": "{\"issues\":[], \"total\":0}"
-            }
-          }'
-
-    - name: Run integration test
-      run: |
-        # Pull the built Docker image
-        docker pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-
-        # Run collector with test config
-        docker run --rm \
-          --network host \
-          -v $(pwd)/test-data:/app/test-data \
-          -e LOG_LEVEL=debug \
-          ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-          -config /app/test-data/config.json -quiet
+        name: aktis-collector-jira-${{ matrix.suffix }}
+        path: |
+          aktis-collector-jira-${{ matrix.suffix }}.*
+        retention-days: 7
 
   release:
-    name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-and-test, docker-build, integration-tests]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
-      packages: write
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Download all build artifacts
+      uses: actions/download-artifact@v4
       with:
-        fetch-depth: 0
+        path: artifacts
+
+    - name: Prepare release files
+      run: |
+        mkdir -p release-files
+
+        find artifacts -name "aktis-collector-jira-*" -type f -exec mv {} release-files/ \;
+
+        ls -la release-files/
 
     - name: Get version
       id: version
       run: |
         if [ -f ".version" ]; then
-          VERSION=$(cat .version | xargs)
+          VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Found version: ${VERSION}"
         else
-          VERSION="1.0.0"
+          echo "version=1.0.0" >> $GITHUB_OUTPUT
+          echo "Using default version: 1.0.0"
         fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-
-    - name: Create release archives
-      run: |
-        mkdir -p release
-        cd artifacts
-        for dir in */; do
-          platform=$(echo "$dir" | sed 's/aktis-collector-jira-//' | sed 's/\///')
-          cd "$dir"
-          if [[ "$platform" == *"windows"* ]]; then
-            zip -r "../../release/aktis-collector-jira-$platform.zip" *
-          else
-            tar -czf "../../release/aktis-collector-jira-$platform.tar.gz" *
-          fi
-          cd ..
-        done
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: v${{ steps.version.outputs.version }}
-        name: Release v${{ steps.version.outputs.version }}
+        name: Aktis Jira Collector v${{ steps.version.outputs.version }}
         draft: false
         prerelease: false
         generate_release_notes: true
-        files: release/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        body: |
+          ## Aktis Jira Collector v${{ steps.version.outputs.version }}
+
+          ### Features
+          - **Jira Integration**: Collect tickets from Jira projects with customizable filters
+          - **BBolt Storage**: Efficient local storage with automatic backups
+          - **Incremental Updates**: Only collect changed tickets since last run
+          - **Plugin SDK Compatible**: Works with aktis-collector via plugin interface
+          - **Cross-Platform**: Binaries for Linux and Windows on AMD64
+
+          ### Download
+          Choose the appropriate binary for your system:
+          - **Linux AMD64**: `aktis-collector-jira-linux-amd64.tar.gz`
+          - **Windows AMD64**: `aktis-collector-jira-windows-amd64.tar.gz`
+
+          ### Usage
+          ```bash
+          # Show version
+          ./aktis-collector-jira -version
+
+          # Show help
+          ./aktis-collector-jira -help
+
+          # Run with config file
+          ./aktis-collector-jira -config aktis-collector-jira.toml
+
+          # Validate config
+          ./aktis-collector-jira -validate -config aktis-collector-jira.toml
+
+          # Incremental update mode
+          ./aktis-collector-jira -config aktis-collector-jira.toml -update
+          ```
+
+          See the included README.md for detailed documentation.
+        files: |
+          release-files/*

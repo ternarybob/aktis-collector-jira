@@ -59,7 +59,6 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 # Build configuration
-$buildTime = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
 $gitCommit = ""
 
 try {
@@ -83,32 +82,69 @@ $collectorOutputPath = Join-Path -Path $binDir -ChildPath "aktis-collector-jira.
 Write-Host "Project Root: $projectRoot" -ForegroundColor Gray
 Write-Host "Environment: $Environment" -ForegroundColor Gray
 Write-Host "Git Commit: $gitCommit" -ForegroundColor Gray
-Write-Host "Build Time: $buildTime" -ForegroundColor Gray
 
-# Handle version management
-if ([string]::IsNullOrWhiteSpace($Version)) {
-    # Try to read version from .version file
-    if (Test-Path $versionFilePath) {
-        $versionContent = Get-Content $versionFilePath | Where-Object { $_ -match '\S' } | Select-Object -First 1
-        $Version = $versionContent.Trim()
-        Write-Host "Using version from .version file: $Version" -ForegroundColor Green
+# Handle version file creation and maintenance
+$buildTimestamp = Get-Date -Format "MM-dd-HH-mm-ss"
+
+if (-not (Test-Path $versionFilePath)) {
+    # Create .version file if it doesn't exist
+    $versionContent = @"
+version: 0.1.0
+build: $buildTimestamp
+"@
+    Set-Content -Path $versionFilePath -Value $versionContent
+    Write-Host "Created .version file with version 0.1.0" -ForegroundColor Green
+} else {
+    # Read current version and increment patch version
+    $versionLines = Get-Content $versionFilePath
+    $currentVersion = ""
+    $updatedLines = @()
+
+    foreach ($line in $versionLines) {
+        if ($line -match '^version:\s*(.+)$') {
+            $currentVersion = $matches[1].Trim()
+
+            # Parse version (format: major.minor.patch)
+            if ($currentVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
+                $major = [int]$matches[1]
+                $minor = [int]$matches[2]
+                $patch = [int]$matches[3]
+
+                # Increment patch version
+                $patch++
+                $newVersion = "$major.$minor.$patch"
+
+                $updatedLines += "version: $newVersion"
+                Write-Host "Incremented version: $currentVersion -> $newVersion" -ForegroundColor Green
+            } else {
+                # Version format not recognized, keep as-is
+                $updatedLines += $line
+                Write-Host "Version format not recognized, keeping: $currentVersion" -ForegroundColor Yellow
+            }
+        } elseif ($line -match '^build:\s*') {
+            $updatedLines += "build: $buildTimestamp"
+        } else {
+            $updatedLines += $line
+        }
     }
-    else {
-        # Default version
-        $Version = "1.0.0-dev"
-        Write-Host "Using default version: $Version" -ForegroundColor Yellow
 
-        # Create .version file
-        Set-Content -Path $versionFilePath -Value $Version
+    Set-Content -Path $versionFilePath -Value $updatedLines
+    Write-Host "Updated build timestamp to: $buildTimestamp" -ForegroundColor Green
+}
+
+# Read version information from .version file
+$versionInfo = @{}
+$versionLines = Get-Content $versionFilePath
+foreach ($line in $versionLines) {
+    if ($line -match '^version:\s*(.+)$') {
+        $versionInfo.Version = $matches[1].Trim()
+    }
+    if ($line -match '^build:\s*(.+)$') {
+        $versionInfo.Build = $matches[1].Trim()
     }
 }
-else {
-    Write-Host "Using specified version: $Version" -ForegroundColor Green
-    # Update .version file
-    Set-Content -Path $versionFilePath -Value $Version
-}
 
-Write-Host "Final Version: $Version" -ForegroundColor Green
+Write-Host "Using version: $($versionInfo.Version), build: $($versionInfo.Build)" -ForegroundColor Cyan
 
 # Clean build artifacts if requested
 if ($Clean) {
@@ -148,8 +184,8 @@ if ($LASTEXITCODE -ne 0) {
 # Build flags
 $module = "aktis-collector-jira/internal/common"
 $buildFlags = @(
-    "-X", "$module.Version=$Version",
-    "-X", "$module.Build=$buildTime",
+    "-X", "$module.Version=$($versionInfo.Version)",
+    "-X", "$module.Build=$($versionInfo.Build)",
     "-X", "$module.GitCommit=$gitCommit"
 )
 
@@ -199,29 +235,51 @@ $configSourcePath = Join-Path -Path $projectRoot -ChildPath "deployments\aktis-c
 $configDestPath = Join-Path -Path $binDir -ChildPath "aktis-collector-jira.toml"
 
 if (Test-Path $configSourcePath) {
-    Write-Host "Copying configuration file..." -ForegroundColor Yellow
-    Copy-Item -Path $configSourcePath -Destination $configDestPath -Force
-    Write-Host "Configuration copied to: $configDestPath" -ForegroundColor Green
-} else {
-    Write-Host "Warning: Configuration file not found at $configSourcePath" -ForegroundColor Yellow
+    if (-not (Test-Path $configDestPath)) {
+        Copy-Item -Path $configSourcePath -Destination $configDestPath
+        Write-Host "Copied configuration: deployments/aktis-collector-jira.toml -> bin/" -ForegroundColor Green
+    } else {
+        Write-Host "Using existing bin/aktis-collector-jira.toml (preserving customizations)" -ForegroundColor Cyan
+    }
 }
 
-# Success message
-Write-Host "" -ForegroundColor Green
-Write-Host "Build completed successfully!" -ForegroundColor Green
-Write-Host "Executable: $collectorOutputPath" -ForegroundColor Green
+# Copy pages directory for web interface
+$pagesSourcePath = Join-Path -Path $projectRoot -ChildPath "pages"
+$pagesDestPath = Join-Path -Path $binDir -ChildPath "pages"
 
-# Show binary info
-if (Test-Path $collectorOutputPath) {
-    $fileInfo = Get-Item $collectorOutputPath
-    Write-Host "Size: $([math]::Round($fileInfo.Length / 1MB, 2)) MB" -ForegroundColor Gray
-    Write-Host "Created: $($fileInfo.CreationTime)" -ForegroundColor Gray
+if (Test-Path $pagesSourcePath) {
+    if (Test-Path $pagesDestPath) {
+        Remove-Item -Path $pagesDestPath -Recurse -Force
+    }
+    Copy-Item -Path $pagesSourcePath -Destination $pagesDestPath -Recurse
+    Write-Host "Copied web interface: pages/ -> bin/pages/" -ForegroundColor Green
 }
 
-Write-Host "" -ForegroundColor Green
-Write-Host "Usage examples:" -ForegroundColor Cyan
-Write-Host "  $collectorOutputPath -help" -ForegroundColor White
-Write-Host "  $collectorOutputPath -version" -ForegroundColor White
-Write-Host "  $collectorOutputPath -config aktis-collector-jira.toml" -ForegroundColor White
-Write-Host "  $collectorOutputPath -config aktis-collector-jira.toml -update" -ForegroundColor White
-Write-Host "  $collectorOutputPath -config aktis-collector-jira.toml -mode prod -quiet" -ForegroundColor White
+# Verify executable was created
+if (-not (Test-Path $collectorOutputPath)) {
+    Write-Error "Build completed but executable not found: $collectorOutputPath"
+    exit 1
+}
+
+# Get file info for binary
+$fileInfo = Get-Item $collectorOutputPath
+$fileSizeMB = [math]::Round($fileInfo.Length / 1MB, 2)
+
+Write-Host "`n==== Build Summary ====" -ForegroundColor Cyan
+Write-Host "Status: SUCCESS" -ForegroundColor Green
+Write-Host "Environment: $Environment" -ForegroundColor Green
+Write-Host "Version: $($versionInfo.Version)" -ForegroundColor Green
+Write-Host "Build: $($versionInfo.Build)" -ForegroundColor Green
+Write-Host "Collector Output: $collectorOutputPath ($fileSizeMB MB)" -ForegroundColor Green
+Write-Host "Build Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
+
+if ($Test) {
+    Write-Host "Tests: EXECUTED" -ForegroundColor Green
+}
+
+if ($Clean) {
+    Write-Host "Clean: EXECUTED" -ForegroundColor Green
+}
+
+Write-Host "`nBuild completed successfully!" -ForegroundColor Green
+Write-Host "Collector: $collectorOutputPath" -ForegroundColor Cyan

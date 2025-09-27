@@ -4,39 +4,31 @@ A production-ready Jira ticket collector built with the Aktis Plugin SDK, follow
 
 ## 🎯 System Architecture
 
-This system implements a complete Jira ticket collection and analytics solution. It consists of three main components:
+This system implements a complete Jira ticket collection and analytics solution with an integrated web interface. The application operates in two modes:
 
-### 1. **Jira Collector** (`cmd/aktis-collector-jira/`)
+### **Collection Mode** (Default)
 - **Purpose**: Collects Jira tickets from configured projects in batches
 - **Technology**: Go 1.24+ with Aktis Plugin SDK
 - **Architecture**: Clean architecture following aktis-receiver standards
+- **Storage**: BBolt database with automatic backups
 - **Key Features**:
   - Batch processing for efficient data collection
   - Incremental updates (only fetch changed tickets)
-  - Local JSON dataset storage with automatic backups
-  - Multi-project support
+  - Multi-project support with flexible configuration
   - Configurable filtering by issue types and statuses
   - Structured logging with arbor
   - Version management and build flags
 
-### 2. **Web Dashboard** (`web-interface/`)
-- **Purpose**: Visual interface for monitoring and analyzing collected data
-- **Technology**: HTML/CSS/JavaScript with Plotly.js
+### **Server Mode** (Web Interface)
+- **Purpose**: Integrated web server with dashboard for monitoring and analytics
+- **Technology**: HTMX-based dynamic UI with modern web standards
 - **Key Features**:
-  - Real-time statistics and metrics
-  - Interactive charts and graphs
-  - Ticket filtering and search
-  - Project overview dashboard
-  - Responsive design with modern UI
-
-### 3. **Dashboard Server** (`web-interface/server.go`)
-- **Purpose**: Serves the web interface and provides API endpoints
-- **Technology**: Go HTTP server
-- **Key Features**:
-  - RESTful API for dashboard data
-  - Static file serving
-  - Data aggregation and statistics
-  - Cross-origin support for API calls
+  - Real-time statistics and metrics dashboard
+  - Interactive data visualization
+  - Ticket filtering and search capabilities
+  - Project overview and analytics
+  - Responsive design optimized for all devices
+  - RESTful API endpoints for data access
 
 ## 🏗️ Project Structure
 
@@ -48,17 +40,24 @@ aktis-collector-jira/
 ├── internal/
 │   ├── common/                   # Infrastructure layer (aktis-receiver template)
 │   │   ├── banner.go             # Startup banner display
-│   │   ├── config.go             # Configuration management
+│   │   ├── config.go             # Configuration management (TOML)
 │   │   ├── errors.go             # Structured error handling
 │   │   ├── logging.go            # Arbor logger integration
 │   │   └── version.go            # Version management
-│   └── collector/                # Business logic
-│       ├── collector.go          # Main collection orchestration
-│       ├── config.go             # Collection configuration
-│       ├── jira_client.go        # Jira API integration
-│       └── storage.go            # Data persistence
+│   ├── interfaces/               # Service interfaces
+│   │   └── interfaces.go         # Interface definitions
+│   ├── services/                 # Service implementations
+│   │   ├── collector.go          # Main collection orchestration
+│   │   ├── jira_client.go        # Jira API integration
+│   │   ├── storage.go            # BBolt database persistence
+│   │   └── webserver.go          # Integrated web server
+│   └── handlers/                 # HTTP handlers
+│       ├── api/                  # API handlers
+│       └── ui/                   # UI handlers
+├── pages/                        # Web UI templates
+│   └── index.html                # HTMX-based dashboard interface
 ├── deployments/
-│   ├── config.example.json       # Configuration template
+│   ├── aktis-collector-jira.toml # Configuration file (TOML format)
 │   ├── docker/                   # Docker deployment
 │   │   ├── Dockerfile            # Multi-stage build
 │   │   ├── docker-compose.yml    # Service definition
@@ -67,14 +66,14 @@ aktis-collector-jira/
 ├── scripts/
 │   ├── build.ps1                 # Windows build with versioning
 │   └── build.sh                  # Linux/Mac build script
-├── web-interface/                # Dashboard UI and server
-│   ├── index.html                # Dashboard interface
-│   ├── app.js                    # Dashboard logic
-│   └── server.go                 # API server
+├── web-interface/                # Legacy dashboard (deprecated)
+│   ├── index.html                # Legacy dashboard interface
+│   ├── app.js                    # Legacy dashboard logic
+│   └── server.go                 # Legacy API server
 ├── .github/workflows/
 │   └── ci-cd.yml                 # GitHub Actions pipeline
 ├── go.mod                        # Go module definition
-├── .version                      # Version tracking
+├── .version                      # Auto-increment version tracking
 └── CLAUDE.md                     # Developer documentation
 ```
 
@@ -107,16 +106,17 @@ go build -o bin/aktis-collector-jira ./cmd/aktis-collector-jira
 Create your configuration file based on the template:
 
 ```bash
-cp configs/config.example.toml configs/config.toml
+cp deployments/aktis-collector-jira.toml deployments/config.toml
 ```
 
-Edit `configs/config.toml`:
+Edit `deployments/config.toml`:
 
 ```toml
 [collector]
 name = "aktis-collector-jira"
 environment = "development"
 send_limit = 100  # Maximum payloads per run (for aktis-collector scheduling)
+web_port = 8080   # Port for web interface in server mode
 
 [jira]
 base_url = "https://your-company.atlassian.net"
@@ -143,7 +143,7 @@ max_results = 500
 include_history = false
 
 [storage]
-# Database file location - defaults to {executable_location}/data/{exec_name}.db
+# BBolt database file location - defaults to {executable_location}/data/{exec_name}.db
 database_path = "./data/aktis-collector-jira.db"
 backup_dir = "./backups"
 retention_days = 90
@@ -156,47 +156,63 @@ retention_days = 90
 2. Click "Create API token"
 3. Copy the generated token to your config file
 
-### Running the Collector
+### Running the Application
 
-**Basic Collection:**
+**Collection Mode (Default):**
 ```bash
-./bin/aktis-collector-jira -config configs/config.toml
+./bin/aktis-collector-jira -config deployments/config.toml
+```
+
+**Server Mode (Web Interface):**
+```bash
+./bin/aktis-collector-jira -server -config deployments/config.toml
 ```
 
 **Command Line Options:**
 - `-version`: Show version information
 - `-help`: Show help message
-- `-config <path>`: Configuration file path (default: `./config.json`)
+- `-config <path>`: Configuration file path (default: `./config.toml`)
 - `-mode <env>`: Environment mode: dev/development/prod/production (default: dev)
 - `-quiet`: Suppress banner output (for aktis-collector integration)
 - `-update`: Run in update mode (incremental - fetch only latest changes)
 - `-batch-size <n>`: Number of tickets to process per batch (default: 50)
+- `-server`: Run in server mode with web interface
+- `-validate`: Validate configuration file and exit
 
-**Examples:**
+**Collection Examples:**
 ```bash
 # Full collection in development mode
-./bin/aktis-collector-jira -config configs/config.toml
+./bin/aktis-collector-jira -config deployments/config.toml
 
 # Incremental update
-./bin/aktis-collector-jira -config configs/config.toml -update
+./bin/aktis-collector-jira -config deployments/config.toml -update
 
 # Production mode with custom batch size
-./bin/aktis-collector-jira -config configs/config.toml -mode prod -batch-size 100
+./bin/aktis-collector-jira -config deployments/config.toml -mode prod -batch-size 100
 
 # For Aktis platform integration (called by aktis-collector)
-./bin/aktis-collector-jira -config configs/config.toml -mode prod -quiet
+./bin/aktis-collector-jira -config deployments/config.toml -mode prod -quiet
 ```
 
-### Running the Dashboard
-
-**Start the Dashboard Server:**
+**Server Mode Examples:**
 ```bash
-cd web-interface
-go run server.go
+# Start web interface on default port (8080)
+./bin/aktis-collector-jira -server -config deployments/config.toml
+
+# Start web interface in production mode
+./bin/aktis-collector-jira -server -config deployments/config.toml -mode prod
 ```
+
+### Web Interface
 
 **Access the Dashboard:**
-Open http://localhost:8080 in your browser
+Open http://localhost:8080 in your browser (or the port configured in `web_port`)
+
+**Features:**
+- HTMX-based dynamic UI with real-time updates
+- Interactive data visualization and analytics
+- Project overview and ticket filtering
+- Responsive design for desktop and mobile
 
 **Dashboard API Endpoints:**
 - `GET /api/dashboard` - Complete dashboard data
@@ -211,47 +227,57 @@ Open http://localhost:8080 in your browser
 ✅ **Incremental Updates**: Only fetch tickets updated since last run
 ✅ **Multi-Project Support**: Configure multiple Jira projects
 ✅ **Flexible Filtering**: Filter by issue types, statuses, custom fields
-✅ **Local Storage**: JSON-based dataset with automatic backups
+✅ **BBolt Database**: Embedded database with automatic backups and transactions
 ✅ **Data Retention**: Configurable cleanup of old data
 ✅ **Structured Logging**: Arbor logger with file and console output
-✅ **Version Management**: Build flags inject version/build/commit info
+✅ **Version Management**: Auto-increment build versioning with timestamps
 ✅ **Error Handling**: Comprehensive error handling and logging
 ✅ **Aktis Integration**: Full compliance with Aktis Plugin SDK
 
-### Dashboard Features
-✅ **Real-time Statistics**: Live metrics and counters
-✅ **Interactive Charts**: Plotly.js powered visualizations
-✅ **Status Distribution**: Pie charts showing ticket status breakdown
-✅ **Priority Analysis**: Bar charts for priority distribution
-✅ **Project Overview**: Per-project statistics and metrics
-✅ **Ticket Filtering**: Filter by project, status, priority
-✅ **Recent Activity**: Latest updated tickets display
-✅ **Responsive Design**: Works on desktop and mobile
+### Web Interface Features
+✅ **Integrated Server**: Built-in web server with single-binary deployment
+✅ **HTMX-Based UI**: Modern dynamic interface without complex JavaScript frameworks
+✅ **Real-time Updates**: Live metrics and data refresh capabilities
+✅ **Interactive Visualizations**: Charts and graphs for data analysis
+✅ **Project Analytics**: Per-project statistics and trending
+✅ **Advanced Filtering**: Multi-dimensional ticket filtering and search
+✅ **Responsive Design**: Optimized for desktop, tablet, and mobile devices
+✅ **RESTful API**: Clean API endpoints for external integrations
 
 ## 📈 Data Flow
 
+### Collection Mode
 ```
 Jira Cloud API
      |
-     | [REST API Calls with Basic Auth]
+     | [REST API Calls with Basic Auth + JQL queries]
      v
-Jira Collector (cmd/aktis-collector-jira)
+Jira Collector (internal/services/collector.go)
      |
-     | [Batch processing + JQL queries]
+     | [Batch processing + data transformation]
      v
-Storage Layer (internal/collector/storage.go)
+Storage Layer (internal/services/storage.go)
      |
-     | [JSON Files: {project}_tickets.json]
+     | [BBolt Database: aktis-collector-jira.db]
      v
-Local Dataset (./data/)
+Local Database (./data/)
+```
+
+### Server Mode
+```
+BBolt Database (./data/aktis-collector-jira.db)
      |
-     | [HTTP API]
+     | [Direct database queries]
      v
-Dashboard Server (web-interface/server.go)
+Web Server (internal/services/webserver.go)
      |
-     | [JSON Responses]
+     | [HTTP API + HTMX responses]
      v
-Web Dashboard (web-interface/index.html)
+Web Interface (pages/index.html)
+     |
+     | [Dynamic UI updates via HTMX]
+     v
+User Browser
 ```
 
 ## 📈 Data Structures
@@ -281,15 +307,21 @@ Web Dashboard (web-interface/index.html)
 ### Storage Structure
 ```
 ./data/
-├── dev_tickets.json      # Development project tickets
-├── proj_tickets.json     # Product project tickets
+├── aktis-collector-jira.db    # BBolt database (all project data)
 └── ...
 
 ./backups/
-├── dev_tickets.json.20250926_103000.bak
-├── proj_tickets.json.20250926_103015.bak
+├── aktis-collector-jira.db.20250926_103000.bak
+├── aktis-collector-jira.db.20250926_103015.bak
 └── ...
 ```
+
+### BBolt Database Organization
+- **Buckets**: Each project gets its own bucket (e.g., "dev", "proj")
+- **Keys**: Ticket keys (e.g., "DEV-123", "PROJ-456")
+- **Values**: JSON-serialized ticket data
+- **Transactions**: ACID compliance for data integrity
+- **Backup**: Automatic periodic backups with configurable retention
 
 ## 🐳 Docker Deployment
 
@@ -330,16 +362,16 @@ require (
 ### Adding Features
 
 **To the Collector:**
-1. **New Issue Fields**: Modify `ExtractIssueData()` in `internal/collector/jira_client.go`
-2. **Custom Processing**: Add methods to `JiraCollector` struct in `internal/collector/collector.go`
-3. **Additional Storage**: Extend `Storage` in `internal/collector/storage.go`
-4. **New API Endpoints**: Extend `JiraClient` in `internal/collector/jira_client.go`
+1. **New Issue Fields**: Modify `ExtractIssueData()` in `internal/services/jira_client.go`
+2. **Custom Processing**: Add methods to collector service in `internal/services/collector.go`
+3. **Additional Storage**: Extend storage interface in `internal/interfaces/interfaces.go` and implement in `internal/services/storage.go`
+4. **New API Endpoints**: Extend Jira client interface and implementation
 
-**To the Dashboard:**
-1. **New Charts**: Add Plotly.js configurations in `web-interface/app.js`
-2. **Additional Filters**: Extend filtering logic in dashboard
-3. **New Metrics**: Add calculation functions in `web-interface/server.go`
-4. **Custom Views**: Create new HTML sections in `web-interface/index.html`
+**To the Web Interface:**
+1. **New API Endpoints**: Add handlers in `internal/handlers/api/` directory
+2. **Additional UI Components**: Extend HTMX templates in `pages/index.html`
+3. **New Views**: Create new handler functions in `internal/handlers/ui/`
+4. **Custom Analytics**: Add calculation functions in `internal/services/webserver.go`
 
 ## 🚀 Production Deployment
 
@@ -360,7 +392,7 @@ require (
 For use with the Aktis data collection platform:
 
 ```bash
-./bin/aktis-collector-jira -config deployments/config.json -mode prod -quiet
+./bin/aktis-collector-jira -config deployments/aktis-collector-jira.toml -mode prod -quiet
 ```
 
 The `-quiet` flag outputs JSON payloads compatible with `aktis-collector`.
@@ -391,8 +423,8 @@ The `-quiet` flag outputs JSON payloads compatible with `aktis-collector`.
 ## 📖 Documentation
 
 - **CLAUDE.md**: Developer documentation with build commands and architecture
-- **API Documentation**: See dashboard server endpoints above
-- **Configuration**: See `configs/config.example.toml` for all options
+- **API Documentation**: See web interface endpoints above
+- **Configuration**: See `deployments/aktis-collector-jira.toml` for all options
 
 ## 🎯 Use Cases
 
