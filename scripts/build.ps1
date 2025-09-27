@@ -74,7 +74,8 @@ Write-Host "Aktis Collector Jira Build Script" -ForegroundColor Cyan
 Write-Host "=================================" -ForegroundColor Cyan
 
 # Setup paths
-$projectRoot = Get-Location
+$scriptDir = $PSScriptRoot
+$projectRoot = Split-Path -Parent $scriptDir
 $versionFilePath = Join-Path -Path $projectRoot -ChildPath ".version"
 $binDir = Join-Path -Path $projectRoot -ChildPath "bin"
 $collectorOutputPath = Join-Path -Path $binDir -ChildPath "aktis-collector-jira.exe"
@@ -174,6 +175,9 @@ $buildArgs = @(
     ".\cmd\aktis-collector-jira"
 )
 
+# Change to project root for build
+Push-Location $projectRoot
+
 if ($Verbose) {
     $buildArgs += "-v"
 }
@@ -181,6 +185,9 @@ if ($Verbose) {
 Write-Host "Build command: go $($buildArgs -join ' ')" -ForegroundColor Gray
 
 & go @buildArgs
+
+# Return to original directory
+Pop-Location
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Build failed!" -ForegroundColor Red

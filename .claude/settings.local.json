@@ -21,7 +21,8 @@
       "Bash(\"./bin/aktis-collector-jira.exe\" -help)",
       "Bash(git log:*)",
       "Bash(./bin/aktis-collector-jira.exe:*)",
-      "Bash(./aktis-collector-jira.exe -validate -config aktis-collector-jira.toml)"
+      "Bash(./aktis-collector-jira.exe -validate -config aktis-collector-jira.toml)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []
