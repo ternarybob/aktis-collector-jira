@@ -27,3 +27,8 @@ go.work.sum
 # Data
 *.pbf
 data
+
+# Backup files
+*.backup
+*.backup[0-9]
+*.bak
