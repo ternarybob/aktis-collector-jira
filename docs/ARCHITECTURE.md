@@ -382,32 +382,67 @@ aktis-collector-jira.db
 }
 ```
 
-## Page Type Detection
+## Page Type Detection (Enhanced October 2025)
 
-The extension automatically detects Jira page types based on URL patterns:
+### Multi-Strategy Detection
 
-| Page Type | URL Pattern | Description |
-|-----------|-------------|-------------|
-| `projectsList` | `/jira/projects?page=*` | Projects directory page |
-| `issue` | `/browse/[KEY-123]` | Individual ticket detail page |
-| `issueList` | `/jira/software/c/projects/[KEY]/issues` | Project ticket list |
-| `board` | `/board/*` or `/secure/RapidBoard` | Kanban/Scrum board |
-| `search` | `/issues/?jql=*` | Search results page |
-| `generic` | Any other Jira page | Fallback extraction |
+The system now uses **content-based detection** in addition to URL patterns, making it more robust for modern Jira Cloud's SPA architecture.
 
-## HTML Parsing Strategy
+**Detection Priority**:
+1. **Content Analysis**: Counts issue links, issue rows, project links in HTML
+2. **URL Pattern Matching**: Traditional URL-based patterns
+3. **Combined Classification**: Merges both strategies with confidence scoring
+
+| Page Type | Detection Methods | Description |
+|-----------|-------------------|-------------|
+| `projectsList` | URL: `/jira/projects?page=*`<br>Content: 3+ project links | Projects directory page |
+| `issue` | URL: `/browse/[KEY-123]`<br>Content: issue detail layout | Individual ticket detail page |
+| `issueList` | URL: `/jira/software/c/projects/[KEY]/issues`<br>Content: 3+ issue links or rows | Project ticket list |
+| `board` | URL: `/board/*`<br>Content: board layout | Kanban/Scrum board |
+| `search` | URL: `/issues/?jql=*`<br>Content: 3+ issue links | Search results page |
+| `generic` | URL: Jira domain<br>Content: insufficient indicators | Fallback extraction |
+
+**Key Enhancement**: Detection no longer relies solely on URL. Modern Jira Cloud uses virtual scrolling and SPA navigation with inconsistent URLs, so content analysis is now prioritized.
+
+## HTML Parsing Strategy (Enhanced October 2025)
+
+### Issue List Page - Multi-Strategy Parsing
+
+Modern Jira Cloud uses different HTML structures than old Jira Server. The parser now uses **4 strategies** to find issue rows:
+
+**Strategy 1: Explicit Attributes (Old Jira Server)**
+```html
+<tr data-issue-key="DATA-35">...</tr>
+```
+
+**Strategy 2: Test ID Patterns (New Jira Cloud)**
+```html
+<div data-testid="issue.container.123">...</div>
+<div data-testid="issue-row-456">...</div>
+```
+
+**Strategy 3: Link-Based Detection (Modern Jira Cloud)**
+- Finds `<div>`, `<li>`, `<article>` elements containing `/browse/` links
+- Validates element has 2+ child elements (not just wrapper)
+- Depth-limited to avoid false positives
+- **This is the key enhancement** for modern Jira Cloud support
+
+**Strategy 4: Semantic Attributes**
+```html
+<div role="row" class="issue-row">DATA-35</div>
+```
+
+### Issue Key Extraction - 3 Fallback Strategies
+
+1. **Data Attributes**: `data-issue-key` or other `data-*` attributes
+2. **Links**: `<a href="/browse/DATA-35">` patterns
+3. **Text Content**: Regex `\b([A-Z]+-\d+)\b` on all text
 
 ### Projects List Page
 1. Find all `<tr>` table rows
 2. Look for cells containing project keys (2-10 uppercase chars)
 3. Extract adjacent cells for name, type, URL
 4. Store as `ProjectData`
-
-### Issue List Page
-1. Find rows with `data-issue-key` attributes
-2. Search for issue key patterns in links: `/browse/[KEY-123]`
-3. Extract summary from adjacent elements
-4. Filter by project if URL contains project key
 
 ### Issue Detail Page
 1. Search for elements with `data-testid` attributes:
@@ -418,6 +453,16 @@ The extension automatically detects Jira page types based on URL patterns:
    - `*priority*` → priority
 2. Extract text content from matched elements
 3. Parse structured data into `TicketData`
+
+### Accumulative Collection
+
+**List Pages** provide breadth (many tickets, basic fields):
+- Key, project_id, summary, status, priority, type, assignee
+
+**Detail Pages** provide depth (one ticket, all fields):
+- All list fields PLUS: description, comments, subtasks, attachments, links, work logs
+
+**Data accumulates**: Visiting list page first, then detail pages builds complete dataset.
 
 ## Extension Template Pattern
 

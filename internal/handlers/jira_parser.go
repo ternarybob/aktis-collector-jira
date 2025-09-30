@@ -4,7 +4,8 @@ import (
 	"regexp"
 	"strings"
 
-	. "aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/models"
+
 	"golang.org/x/net/html"
 )
 
@@ -428,13 +429,18 @@ func (p *JiraParser) extractProjectKeyFromURL(url string) string {
 }
 
 // findIssueRows finds all table rows or list items that contain issue data
+// Supports both old Jira (tables) and new Jira Cloud (divs with virtual scrolling)
 func (p *JiraParser) findIssueRows(node *html.Node) []*html.Node {
 	var rows []*html.Node
+	keyRegex := regexp.MustCompile(`\b([A-Z]+-\d+)\b`)
 
-	var traverse func(*html.Node)
-	traverse = func(n *html.Node) {
+	var traverse func(*html.Node, int)
+	traverse = func(n *html.Node, depth int) {
 		if n.Type == html.ElementNode {
-			// Check for table rows with data-issue-key attribute
+			isCandidate := false
+			hasIssueKey := false
+
+			// Strategy 1: Check for explicit data-issue-key attribute (old Jira)
 			if n.Data == "tr" {
 				for _, attr := range n.Attr {
 					if attr.Key == "data-issue-key" {
@@ -444,45 +450,140 @@ func (p *JiraParser) findIssueRows(node *html.Node) []*html.Node {
 				}
 			}
 
-			// Check for divs/elements with issue-related data attributes
-			if n.Data == "div" || n.Data == "li" {
-				for _, attr := range n.Attr {
-					if (attr.Key == "data-testid" || attr.Key == "data-test-id") &&
-						(strings.Contains(attr.Val, "issue") && strings.Contains(attr.Val, "row")) {
-						rows = append(rows, n)
-						return
+			// Strategy 2: Check for specific test IDs (both old and new Jira)
+			for _, attr := range n.Attr {
+				val := strings.ToLower(attr.Val)
+
+				// Check data-testid patterns
+				if attr.Key == "data-testid" || attr.Key == "data-test-id" {
+					// Modern Jira Cloud: issue container patterns
+					if strings.Contains(val, "issue.") ||
+						strings.Contains(val, "issue-") ||
+						(strings.Contains(val, "issue") && strings.Contains(val, "row")) ||
+						(strings.Contains(val, "issue") && strings.Contains(val, "container")) {
+						isCandidate = true
 					}
 				}
+
+				// Check for issue keys in data attributes
+				if strings.Contains(attr.Key, "data-") && keyRegex.MatchString(attr.Val) {
+					hasIssueKey = true
+					isCandidate = true
+				}
+			}
+
+			// Strategy 3: Modern Jira Cloud - divs containing issue links
+			// Look for divs that contain links to /browse/ with issue keys
+			if (n.Data == "div" || n.Data == "li" || n.Data == "article") && depth < 15 {
+				hasLink := false
+				var checkForIssueLink func(*html.Node, int) bool
+				checkForIssueLink = func(child *html.Node, childDepth int) bool {
+					if childDepth > 5 { // Only look 5 levels deep
+						return false
+					}
+					if child.Type == html.ElementNode && child.Data == "a" {
+						for _, attr := range child.Attr {
+							if attr.Key == "href" && strings.Contains(attr.Val, "/browse/") {
+								if keyRegex.MatchString(attr.Val) {
+									return true
+								}
+							}
+						}
+					}
+					for c := child.FirstChild; c != nil; c = c.NextSibling {
+						if checkForIssueLink(c, childDepth+1) {
+							return true
+						}
+					}
+					return false
+				}
+				hasLink = checkForIssueLink(n, 0)
+
+				if hasLink {
+					// Check if this element is a reasonable size for an issue row
+					// by checking if it has multiple child elements (not just a tiny wrapper)
+					childCount := 0
+					for c := n.FirstChild; c != nil; c = c.NextSibling {
+						if c.Type == html.ElementNode {
+							childCount++
+						}
+					}
+					if childCount >= 2 { // Must have at least 2 child elements
+						isCandidate = true
+						hasIssueKey = true
+					}
+				}
+			}
+
+			// Strategy 4: Check for issue keys in text content (for elements with specific roles/classes)
+			if !isCandidate && (n.Data == "div" || n.Data == "li" || n.Data == "tr") {
+				for _, attr := range n.Attr {
+					// Check for semantic attributes
+					if (attr.Key == "role" && (attr.Val == "row" || attr.Val == "listitem")) ||
+						(attr.Key == "class" && (strings.Contains(attr.Val, "issue") || strings.Contains(attr.Val, "row"))) {
+						// Check if it contains an issue key in immediate children
+						text := ""
+						for c := n.FirstChild; c != nil && len(text) < 200; c = c.NextSibling {
+							if c.Type == html.TextNode {
+								text += c.Data
+							} else if c.Type == html.ElementNode {
+								text += p.extractText(c)
+							}
+						}
+						if keyRegex.MatchString(text) {
+							isCandidate = true
+							hasIssueKey = true
+						}
+					}
+				}
+			}
+
+			// Add to results if it's a candidate and has issue key
+			if isCandidate && hasIssueKey {
+				rows = append(rows, n)
+				return // Don't traverse children of matched rows
 			}
 		}
 
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			traverse(c)
+			traverse(c, depth+1)
 		}
 	}
 
-	traverse(node)
+	traverse(node, 0)
 	return rows
 }
 
 // extractIssueFromRow extracts issue data from a table row or list item
+// Enhanced to support modern Jira Cloud's diverse HTML structures
 func (p *JiraParser) extractIssueFromRow(row *html.Node, projectFilter string) map[string]interface{} {
 	issue := make(map[string]interface{})
 	keyRegex := regexp.MustCompile(`\b([A-Z]+-\d+)\b`)
 
-	// Check data-issue-key attribute first
+	// Strategy 1: Check data-issue-key attribute first (old Jira)
 	for _, attr := range row.Attr {
 		if attr.Key == "data-issue-key" {
 			if projectFilter == "" || strings.HasPrefix(attr.Val, projectFilter+"-") {
 				issue["key"] = attr.Val
 			}
 		}
+
+		// Also check other data attributes that might contain the key
+		if strings.Contains(attr.Key, "data-") {
+			matches := keyRegex.FindStringSubmatch(attr.Val)
+			if len(matches) > 1 {
+				key := matches[1]
+				if projectFilter == "" || strings.HasPrefix(key, projectFilter+"-") {
+					issue["key"] = key
+				}
+			}
+		}
 	}
 
-	// If no key yet, search text content and links
+	// Strategy 2: If no key yet, search links first (highest priority)
 	if issue["key"] == nil {
-		var findKey func(*html.Node) string
-		findKey = func(n *html.Node) string {
+		var findKeyFromLink func(*html.Node) string
+		findKeyFromLink = func(n *html.Node) string {
 			if n.Type == html.ElementNode && n.Data == "a" {
 				for _, attr := range n.Attr {
 					if attr.Key == "href" && strings.Contains(attr.Val, "/browse/") {
@@ -497,26 +598,30 @@ func (p *JiraParser) extractIssueFromRow(row *html.Node, projectFilter string) m
 				}
 			}
 
-			if n.Type == html.TextNode {
-				matches := keyRegex.FindStringSubmatch(n.Data)
-				if len(matches) > 1 {
-					key := matches[1]
-					if projectFilter == "" || strings.HasPrefix(key, projectFilter+"-") {
-						return key
-					}
-				}
-			}
-
 			for c := n.FirstChild; c != nil; c = c.NextSibling {
-				if key := findKey(c); key != "" {
+				if key := findKeyFromLink(c); key != "" {
 					return key
 				}
 			}
 			return ""
 		}
 
-		if key := findKey(row); key != "" {
+		if key := findKeyFromLink(row); key != "" {
 			issue["key"] = key
+		}
+	}
+
+	// Strategy 3: If still no key, search all text content
+	if issue["key"] == nil {
+		allText := p.extractText(row)
+		matches := keyRegex.FindAllString(allText, -1)
+
+		// Find the first valid key that matches project filter
+		for _, match := range matches {
+			if projectFilter == "" || strings.HasPrefix(match, projectFilter+"-") {
+				issue["key"] = match
+				break
+			}
 		}
 	}
 
@@ -690,8 +795,8 @@ func (p *JiraParser) extractSummaryFromRow(row *html.Node, issueKey string) stri
 }
 
 // ConvertToTicketData converts parsed issue data to TicketData struct
-func (p *JiraParser) ConvertToTicketData(issueData map[string]interface{}, timestamp string) *TicketData {
-	ticket := &TicketData{
+func (p *JiraParser) ConvertToTicketData(issueData map[string]interface{}, timestamp string) *models.TicketData {
+	ticket := &models.TicketData{
 		Updated: timestamp,
 	}
 

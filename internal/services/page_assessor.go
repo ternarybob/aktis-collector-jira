@@ -2,9 +2,12 @@ package services
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
-	. "aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/models"
+
 	"github.com/ternarybob/arbor"
 	"golang.org/x/net/html"
 )
@@ -14,15 +17,15 @@ type pageAssessor struct {
 }
 
 // NewPageAssessor creates a new page assessment service
-func NewPageAssessor(logger arbor.ILogger) PageAssessor {
+func NewPageAssessor(logger arbor.ILogger) interfaces.PageAssessor {
 	return &pageAssessor{
 		logger: logger,
 	}
 }
 
 // AssessPage analyzes HTML and URL to determine page type without parsing full content
-func (pa *pageAssessor) AssessPage(htmlContent, url string) (*PageAssessment, error) {
-	assessment := &PageAssessment{
+func (pa *pageAssessor) AssessPage(htmlContent, url string) (*models.PageAssessment, error) {
+	assessment := &models.PageAssessment{
 		PageType:    "unknown",
 		Confidence:  "low",
 		Description: "Page type could not be determined",
@@ -65,8 +68,12 @@ func (pa *pageAssessor) AssessPage(htmlContent, url string) (*PageAssessment, er
 func (pa *pageAssessor) checkURLPatterns(url string) []string {
 	indicators := []string{}
 
-	// Check for Projects List page
+	// Check for Projects List page (multiple variations)
 	if strings.Contains(url, "/jira/projects") && !strings.Contains(url, "/projects/") {
+		indicators = append(indicators, "url_pattern:projects_list")
+	}
+	// Also check for direct /projects endpoint
+	if strings.HasSuffix(url, "/projects") || strings.Contains(url, "/projects?") {
 		indicators = append(indicators, "url_pattern:projects_list")
 	}
 
@@ -99,11 +106,17 @@ func (pa *pageAssessor) checkURLPatterns(url string) []string {
 }
 
 // checkHTMLStructure looks for HTML patterns that indicate page type
+// Enhanced to detect modern Jira Cloud structures
 func (pa *pageAssessor) checkHTMLStructure(doc *html.Node) []string {
 	indicators := []string{}
+	issueKeyRegex := regexp.MustCompile(`\b([A-Z]+-\d+)\b`)
 
-	var traverse func(*html.Node)
-	traverse = func(n *html.Node) {
+	issueLinksCount := 0
+	issueRowsCount := 0
+	projectLinksCount := 0
+
+	var traverse func(*html.Node, int)
+	traverse = func(n *html.Node, depth int) {
 		if n.Type == html.ElementNode {
 			// Check for project table structure
 			if n.Data == "table" {
@@ -114,15 +127,37 @@ func (pa *pageAssessor) checkHTMLStructure(doc *html.Node) []string {
 				}
 			}
 
-			// Check for issue rows
-			if n.Data == "tr" || n.Data == "div" {
+			// Check for explicit issue rows (old Jira)
+			if n.Data == "tr" || n.Data == "div" || n.Data == "li" {
 				for _, attr := range n.Attr {
 					if attr.Key == "data-issue-key" {
-						indicators = append(indicators, "html_structure:issue_rows")
+						issueRowsCount++
+						if issueRowsCount == 1 {
+							indicators = append(indicators, "html_structure:issue_rows")
+						}
 					}
-					if (attr.Key == "data-testid" || attr.Key == "data-test-id") &&
-						strings.Contains(attr.Val, "issue") {
-						indicators = append(indicators, "html_structure:issue_elements")
+					if attr.Key == "data-testid" || attr.Key == "data-test-id" {
+						val := strings.ToLower(attr.Val)
+						if strings.Contains(val, "issue") {
+							if strings.Contains(val, "row") || strings.Contains(val, "container") || strings.Contains(val, "issue.") {
+								issueRowsCount++
+								if issueRowsCount == 1 {
+									indicators = append(indicators, "html_structure:issue_elements")
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Check for issue links (modern Jira Cloud)
+			// Count links to /browse/ with issue keys
+			if n.Data == "a" && depth < 20 {
+				for _, attr := range n.Attr {
+					if attr.Key == "href" && strings.Contains(attr.Val, "/browse/") {
+						if issueKeyRegex.MatchString(attr.Val) {
+							issueLinksCount++
+						}
 					}
 				}
 			}
@@ -143,23 +178,48 @@ func (pa *pageAssessor) checkHTMLStructure(doc *html.Node) []string {
 					if (attr.Key == "data-testid" || attr.Key == "id") &&
 						(strings.Contains(attr.Val, "issue-view") ||
 							strings.Contains(attr.Val, "issue-details") ||
-							strings.Contains(attr.Val, "description")) {
+							strings.Contains(attr.Val, "issue.views.issue-details")) {
 						indicators = append(indicators, "html_structure:issue_detail_layout")
+					}
+				}
+			}
+
+			// Check for project links (modern Jira Cloud projects list)
+			if n.Data == "a" && depth < 20 {
+				for _, attr := range n.Attr {
+					if attr.Key == "href" && strings.Contains(attr.Val, "/projects/") {
+						projectLinksCount++
 					}
 				}
 			}
 		}
 
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			traverse(c)
+			traverse(c, depth+1)
 		}
 	}
 
-	traverse(doc)
+	traverse(doc, 0)
+
+	// Add indicators based on counts
+	if issueLinksCount >= 3 {
+		indicators = append(indicators, "html_structure:multiple_issue_links")
+		pa.logger.Debug().Int("count", issueLinksCount).Msg("Found multiple issue links")
+	}
+	if issueRowsCount >= 3 {
+		indicators = append(indicators, "html_structure:multiple_issue_rows")
+		pa.logger.Debug().Int("count", issueRowsCount).Msg("Found multiple issue rows")
+	}
+	if projectLinksCount >= 3 {
+		indicators = append(indicators, "html_structure:multiple_project_links")
+		pa.logger.Debug().Int("count", projectLinksCount).Msg("Found multiple project links")
+	}
+
 	return indicators
 }
 
 // determinePageType determines the page type based on indicators
+// Enhanced to prioritize content-based detection over URL patterns
 func (pa *pageAssessor) determinePageType(url string, indicators []string) string {
 	// Count indicator types
 	hasProjectsURLPattern := false
@@ -169,7 +229,9 @@ func (pa *pageAssessor) determinePageType(url string, indicators []string) strin
 	hasSearchURLPattern := false
 
 	hasProjectTable := false
+	hasProjectLinks := false
 	hasIssueRows := false
+	hasIssueLinks := false
 	hasBoardLayout := false
 	hasIssueDetailLayout := false
 
@@ -187,8 +249,12 @@ func (pa *pageAssessor) determinePageType(url string, indicators []string) strin
 			hasSearchURLPattern = true
 		case "html_structure:project_table":
 			hasProjectTable = true
-		case "html_structure:issue_rows", "html_structure:issue_elements":
+		case "html_structure:multiple_project_links":
+			hasProjectLinks = true
+		case "html_structure:issue_rows", "html_structure:issue_elements", "html_structure:multiple_issue_rows":
 			hasIssueRows = true
+		case "html_structure:multiple_issue_links":
+			hasIssueLinks = true
 		case "html_structure:board_layout":
 			hasBoardLayout = true
 		case "html_structure:issue_detail_layout":
@@ -197,19 +263,38 @@ func (pa *pageAssessor) determinePageType(url string, indicators []string) strin
 	}
 
 	// Determine page type with priority
-	if hasProjectsURLPattern || hasProjectTable {
-		return "projectsList"
-	}
+	// Priority 1: Issue detail (specific page, high priority)
 	if hasIssueDetailURLPattern || hasIssueDetailLayout {
 		return "issue"
 	}
-	if hasIssueListURLPattern && hasIssueRows {
+
+	// Priority 2: Projects list
+	if hasProjectsURLPattern || hasProjectTable || hasProjectLinks {
+		return "projectsList"
+	}
+
+	// Priority 3: Issue list (content-based detection takes priority over URL)
+	// If we see multiple issue links/rows, it's likely a list regardless of URL
+	if hasIssueLinks || hasIssueRows {
+		// Check URL to differentiate between board, search, and issueList
+		if hasBoardURLPattern || hasBoardLayout {
+			return "board"
+		}
+		if hasSearchURLPattern {
+			return "search"
+		}
+		// Default to issueList if we have issue content but unclear URL
+		return "issueList"
+	}
+
+	// Priority 4: URL-based detection when content is unclear
+	if hasIssueListURLPattern {
 		return "issueList"
 	}
 	if hasBoardURLPattern || hasBoardLayout {
 		return "board"
 	}
-	if hasSearchURLPattern && hasIssueRows {
+	if hasSearchURLPattern {
 		return "search"
 	}
 
@@ -275,7 +360,7 @@ func (pa *pageAssessor) getPageDescription(pageType string) string {
 
 // isCollectable determines if the page can be collected based on type and confidence
 func (pa *pageAssessor) isCollectable(pageType, confidence string) bool {
-	// Only collect known page types with at least medium confidence
+	// Define collectable page types
 	collectableTypes := map[string]bool{
 		"projectsList": true,
 		"issue":        true,
@@ -288,6 +373,24 @@ func (pa *pageAssessor) isCollectable(pageType, confidence string) bool {
 
 	isKnownType := collectableTypes[pageType]
 
-	// Must be a known collectable type AND have at least medium confidence
-	return isKnownType && (confidence == "high" || confidence == "medium")
+	// For auto-collection, we want to be more permissive
+	// Allow low confidence for known page types if we have clear URL indicators
+	// This ensures auto-collection works even when HTML parsing is incomplete
+	if isKnownType {
+		// High or medium confidence: always collect
+		if confidence == "high" || confidence == "medium" {
+			return true
+		}
+		// Low confidence: still collect for known types (URL-based detection is often sufficient)
+		// This handles cases where page is still loading or HTML is dynamic
+		if confidence == "low" {
+			pa.logger.Debug().
+				Str("page_type", pageType).
+				Str("confidence", confidence).
+				Msg("Allowing collection with low confidence for known page type")
+			return true
+		}
+	}
+
+	return false
 }

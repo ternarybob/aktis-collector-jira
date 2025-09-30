@@ -6,15 +6,16 @@ import (
 	"net/http"
 	"path/filepath"
 
-	. "aktis-collector-jira/internal/common"
-	. "aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/common"
+	"aktis-collector-jira/internal/interfaces"
+
 	"github.com/ternarybob/arbor"
 )
 
 // UIHandlers contains all UI endpoint handlers
 type UIHandlers struct {
-	config    *Config
-	storage   Storage
+	config    *common.Config
+	storage   interfaces.Storage
 	logger    arbor.ILogger
 	templates *template.Template
 }
@@ -29,7 +30,7 @@ type TemplateData struct {
 }
 
 // NewUIHandlers creates a new UI handlers instance
-func NewUIHandlers(config *Config, storage Storage, logger arbor.ILogger, pagesDir string) (*UIHandlers, error) {
+func NewUIHandlers(config *common.Config, storage interfaces.Storage, logger arbor.ILogger, pagesDir string) (*UIHandlers, error) {
 	// Load templates
 	templatesPath := filepath.Join(pagesDir, "*.html")
 	templates, err := template.ParseGlob(templatesPath)
@@ -50,8 +51,8 @@ func (h *UIHandlers) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	data := TemplateData{
 		Title:       "Jira Collector",
 		ServiceName: h.config.Collector.Name,
-		Version:     GetVersion(),
-		Build:       GetBuild(),
+		Version:     common.GetVersion(),
+		Build:       common.GetBuild(),
 		Environment: h.config.Collector.Environment,
 	}
 

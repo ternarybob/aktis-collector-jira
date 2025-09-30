@@ -1,186 +1,317 @@
-name: Build and Release
+name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
   workflow_dispatch:
 
+env:
+  GO_VERSION: '1.24'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
-  build:
+  # Lint and code quality
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # Unit tests
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Generate coverage report
+        run: |
+          go tool cover -func=coverage.out
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.html
+
+  # Build binaries
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    needs: [lint, test]
     strategy:
       matrix:
         include:
-          - goos: linux
+          - os: ubuntu-latest
+            goos: linux
             goarch: amd64
             suffix: linux-amd64
-          - goos: windows
+            binary: aktis-collector-jira
+          - os: windows-latest
+            goos: windows
             goarch: amd64
             suffix: windows-amd64
+            binary: aktis-collector-jira.exe
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+            binary: aktis-collector-jira
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
-    - name: Update .version file with build timestamp
-      run: |
-        if [ -f ".version" ]; then
-          VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
-          BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          if [ -f .version ]; then
+            VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
+            BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+          else
+            VERSION="0.1.0"
+            BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build=$BUILD" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Build: $BUILD"
 
-          cat > .version << EOF
-        version: ${VERSION}
-        build: ${BUILD}
-        EOF
+      - name: Download dependencies
+        run: go mod download
 
-          echo "Updated .version file with build: ${BUILD}"
-        else
-          echo "Warning: .version file not found"
-        fi
+      - name: Build binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build \
+            -ldflags="-w -s \
+              -X aktis-collector-jira/internal/common.Version=${{ steps.version.outputs.version }} \
+              -X aktis-collector-jira/internal/common.Build=${{ steps.version.outputs.build }} \
+              -X aktis-collector-jira/internal/common.GitCommit=${{ github.sha }}" \
+            -o bin/${{ matrix.binary }} \
+            ./cmd/aktis-collector-jira
 
-    - name: Build collector binary
-      env:
-        CGO_ENABLED: 0
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-      run: |
-        mkdir -p bin
+      - name: Create release archive
+        shell: bash
+        run: |
+          mkdir -p release
+          cp bin/${{ matrix.binary }} release/
 
-        if [ -f ".version" ]; then
-          VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
-          BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
-        else
-          VERSION="dev"
-          BUILD="unknown"
-        fi
+          if [ -f "deployments/aktis-collector-jira.toml" ]; then
+            cp deployments/aktis-collector-jira.toml release/aktis-collector-jira.toml.example
+          fi
 
-        BINARY_NAME="aktis-collector-jira"
-        if [ "${{ matrix.goos }}" = "windows" ]; then
-          BINARY_NAME="${BINARY_NAME}.exe"
-        fi
+          if [ -f "README.md" ]; then
+            cp README.md release/
+          fi
 
-        go build \
-          -ldflags="-w -s -X aktis-collector-jira/internal/common.Version=${VERSION} -X aktis-collector-jira/internal/common.Build=${BUILD} -X aktis-collector-jira/internal/common.GitCommit=${GITHUB_SHA}" \
-          -o bin/${BINARY_NAME} ./cmd/aktis-collector-jira
+          cd release
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a ../aktis-collector-jira-${{ matrix.suffix }}.zip *
+          else
+            tar -czf ../aktis-collector-jira-${{ matrix.suffix }}.tar.gz *
+          fi
 
-        if [ "${{ matrix.goos }}" != "windows" ]; then
-          chmod +x bin/${BINARY_NAME}
-        fi
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aktis-collector-jira-${{ matrix.suffix }}
+          path: |
+            aktis-collector-jira-${{ matrix.suffix }}.*
+          retention-days: 7
 
-        ls -la bin/
-        file bin/${BINARY_NAME}
-
-    - name: Create release archive
-      run: |
-        mkdir -p release
-
-        cp bin/* release/
-
-        if [ -f "deployments/aktis-collector-jira.toml" ]; then
-          cp deployments/aktis-collector-jira.toml release/aktis-collector-jira.toml.example
-        fi
-
-        if [ -f "README.md" ]; then
-          cp README.md release/
-        fi
-
-        tar -czf aktis-collector-jira-${{ matrix.suffix }}.tar.gz -C release .
-
-        sha256sum aktis-collector-jira-${{ matrix.suffix }}.tar.gz > aktis-collector-jira-${{ matrix.suffix }}.tar.gz.sha256
-
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: aktis-collector-jira-${{ matrix.suffix }}
-        path: |
-          aktis-collector-jira-${{ matrix.suffix }}.*
-        retention-days: 7
-
-  release:
+  # Build and push Docker image
+  docker:
+    name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
+    needs: [lint, test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          if [ -f .version ]; then
+            VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
+            BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+          else
+            VERSION="0.1.0"
+            BUILD="${GITHUB_RUN_NUMBER}-$(date +%m-%d-%H-%M-%S)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build=$BUILD" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./deployments/docker/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            BUILD=${{ steps.version.outputs.build }}
+            GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Create release
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build, docker]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Download all build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
+      - name: Get version
+        id: version
+        run: |
+          if [ -f ".version" ]; then
+            VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "Found version: ${VERSION}"
+          else
+            VERSION="1.0.0"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "Using default version: ${VERSION}"
+          fi
 
-    - name: Prepare release files
-      run: |
-        mkdir -p release-files
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-        find artifacts -name "aktis-collector-jira-*" -type f -exec mv {} release-files/ \;
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          find artifacts -name "aktis-collector-jira-*" -type f -exec mv {} release-files/ \;
+          ls -la release-files/
 
-        ls -la release-files/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Aktis Jira Collector v${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Aktis Jira Collector v${{ steps.version.outputs.version }}
 
-    - name: Get version
-      id: version
-      run: |
-        if [ -f ".version" ]; then
-          VERSION=$(grep "^version:" .version | sed 's/^version:\s*//' | xargs)
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Found version: ${VERSION}"
-        else
-          echo "version=1.0.0" >> $GITHUB_OUTPUT
-          echo "Using default version: 1.0.0"
-        fi
+            ### Features
+            - **Chrome Extension**: Manual and auto-processing data collection from browser
+            - **Web Interface**: HTMX-based dashboard for monitoring and management
+            - **BBolt Storage**: Efficient local storage with project buckets
+            - **Jira Parser**: HTML/DOM parsing with field extraction
+            - **Cross-Platform**: Binaries for Linux, Windows, and macOS
 
-    - name: Create GitHub Release
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: v${{ steps.version.outputs.version }}
-        name: Aktis Jira Collector v${{ steps.version.outputs.version }}
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-        body: |
-          ## Aktis Jira Collector v${{ steps.version.outputs.version }}
+            ### Download
+            Choose the appropriate binary for your system:
+            - **Linux AMD64**: `aktis-collector-jira-linux-amd64.tar.gz`
+            - **Windows AMD64**: `aktis-collector-jira-windows-amd64.zip`
+            - **macOS AMD64**: `aktis-collector-jira-darwin-amd64.tar.gz`
 
-          ### Features
-          - **Jira Integration**: Collect tickets from Jira projects with customizable filters
-          - **BBolt Storage**: Efficient local storage with automatic backups
-          - **Incremental Updates**: Only collect changed tickets since last run
-          - **Plugin SDK Compatible**: Works with aktis-collector via plugin interface
-          - **Cross-Platform**: Binaries for Linux and Windows on AMD64
+            ### Docker
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ```
 
-          ### Download
-          Choose the appropriate binary for your system:
-          - **Linux AMD64**: `aktis-collector-jira-linux-amd64.tar.gz`
-          - **Windows AMD64**: `aktis-collector-jira-windows-amd64.tar.gz`
+            ### Usage
+            ```bash
+            # Show version
+            ./aktis-collector-jira -version
 
-          ### Usage
-          ```bash
-          # Show version
-          ./aktis-collector-jira -version
+            # Show help
+            ./aktis-collector-jira -help
 
-          # Show help
-          ./aktis-collector-jira -help
+            # Run with config file
+            ./aktis-collector-jira -config aktis-collector-jira.toml
 
-          # Run with config file
-          ./aktis-collector-jira -config aktis-collector-jira.toml
+            # Validate config
+            ./aktis-collector-jira -validate -config aktis-collector-jira.toml
+            ```
 
-          # Validate config
-          ./aktis-collector-jira -validate -config aktis-collector-jira.toml
-
-          # Incremental update mode
-          ./aktis-collector-jira -config aktis-collector-jira.toml -update
-          ```
-
-          See the included README.md for detailed documentation.
-        files: |
-          release-files/*
+            See the included README.md for detailed documentation.
+          files: |
+            release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

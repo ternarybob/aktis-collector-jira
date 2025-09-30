@@ -8,16 +8,18 @@ import (
 	"path/filepath"
 	"time"
 
-	. "aktis-collector-jira/internal/common"
+	"aktis-collector-jira/internal/common"
 	"aktis-collector-jira/internal/handlers"
-	. "aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/middleware"
+
 	"github.com/ternarybob/arbor"
 )
 
 // webServer provides HTTP endpoints for monitoring and status
 type webServer struct {
-	config      *Config
-	storage     Storage
+	config      *common.Config
+	storage     interfaces.Storage
 	server      *http.Server
 	logger      arbor.ILogger
 	apiHandlers *handlers.APIHandlers
@@ -27,7 +29,7 @@ type webServer struct {
 }
 
 // NewWebServer creates a new web server instance
-func NewWebServer(cfg *Config, storage Storage, logger arbor.ILogger) (WebService, error) {
+func NewWebServer(cfg *common.Config, storage interfaces.Storage, logger arbor.ILogger) (interfaces.WebService, error) {
 	mux := http.NewServeMux()
 
 	// Create page assessor service
@@ -64,19 +66,23 @@ func NewWebServer(cfg *Config, storage Storage, logger arbor.ILogger) (WebServic
 		},
 	}
 
-	// Register API endpoints with logging middleware
-	mux.HandleFunc("/health", ws.loggingMiddleware(apiHandlers.HealthHandler))
-	mux.HandleFunc("/status", ws.loggingMiddleware(apiHandlers.StatusHandler))
-	mux.HandleFunc("/projects", ws.loggingMiddleware(apiHandlers.ProjectsHandler))
-	mux.HandleFunc("/database", ws.loggingMiddleware(apiHandlers.DatabaseHandler))
-	mux.HandleFunc("/config", ws.loggingMiddleware(apiHandlers.ConfigHandler))
-	mux.HandleFunc("/assess", ws.loggingMiddleware(apiHandlers.AssessHandler))
-	mux.HandleFunc("/receiver", ws.loggingMiddleware(apiHandlers.ReceiverHandler))
+	// Create middleware chain
+	logMiddleware := middleware.Logging(logger)
+	corsMiddleware := middleware.CORS
+
+	// Register API endpoints with middleware
+	mux.HandleFunc("/health", logMiddleware(corsMiddleware(apiHandlers.HealthHandler)))
+	mux.HandleFunc("/status", logMiddleware(corsMiddleware(apiHandlers.StatusHandler)))
+	mux.HandleFunc("/projects", logMiddleware(corsMiddleware(apiHandlers.ProjectsHandler)))
+	mux.HandleFunc("/database", logMiddleware(corsMiddleware(apiHandlers.DatabaseHandler)))
+	mux.HandleFunc("/config", logMiddleware(corsMiddleware(apiHandlers.ConfigHandler)))
+	mux.HandleFunc("/assess", logMiddleware(corsMiddleware(apiHandlers.AssessHandler)))
+	mux.HandleFunc("/receiver", logMiddleware(corsMiddleware(apiHandlers.ReceiverHandler)))
 
 	// Register UI endpoints if available
 	if uiHandlers != nil {
-		mux.HandleFunc("/", ws.loggingMiddleware(uiHandlers.IndexHandler))
-		mux.HandleFunc("/database/data", ws.loggingMiddleware(uiHandlers.BufferDataHandler))
+		mux.HandleFunc("/", logMiddleware(uiHandlers.IndexHandler))
+		mux.HandleFunc("/database/data", logMiddleware(uiHandlers.BufferDataHandler))
 	}
 
 	return ws, nil
@@ -110,45 +116,4 @@ func (ws *webServer) Stop() error {
 // IsRunning returns true if the web server is running
 func (ws *webServer) IsRunning() bool {
 	return ws.running
-}
-
-func (ws *webServer) loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Add CORS headers for Chrome extension
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-		// Handle preflight OPTIONS request
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		start := time.Now()
-
-		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
-		next(lrw, r)
-
-		duration := time.Since(start)
-
-		ws.logger.Info().
-			Str("method", r.Method).
-			Str("path", r.URL.Path).
-			Str("remote_addr", r.RemoteAddr).
-			Int("status", lrw.statusCode).
-			Dur("duration", duration).
-			Msg("HTTP request")
-	}
-}
-
-type loggingResponseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (lrw *loggingResponseWriter) WriteHeader(code int) {
-	lrw.statusCode = code
-	lrw.ResponseWriter.WriteHeader(code)
 }

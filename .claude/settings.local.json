@@ -48,7 +48,8 @@
       "Bash(md5sum:*)",
       "Bash(grep:*)",
       "Bash(ls:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

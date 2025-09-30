@@ -1,0 +1,52 @@
+# Aktis Collector - Jira Configuration (Local Development)
+
+[collector]
+name = "aktis-collector-jira"
+environment = "development"
+send_limit = 100
+port = 8080
+
+[jira]
+# Collection methods: ["api"] or ["scraper"] or ["api", "scraper"]
+# Currently using Chrome extension for data collection
+method = ["api"]
+
+base_url = "https://your-company.atlassian.net"
+timeout_seconds = 30
+
+[jira.api]
+# API authentication settings (not currently used with extension-based collection)
+username = "your-email@company.com"
+api_token = "your-jira-api-token"
+
+[jira.scraper]
+# Scraper settings (planned feature, not yet implemented)
+use_existing_browser = false
+remote_debug_port = 9222
+browser_path = ""
+user_data_dir = ""
+headless = true
+wait_before_scrape_ms = 1000
+
+[projects]
+# List of project keys to collect from
+projects = ["dev", "proj"]
+
+[dev]
+name = "Development Project"
+issue_types = ["Bug", "Story", "Task", "Epic", "Sub-task"]
+statuses = ["To Do", "In Progress", "In Review", "Done", "Closed"]
+max_results = 1000
+include_history = true
+
+[proj]
+name = "Product Project"
+issue_types = ["Bug", "Feature", "Improvement", "Task"]
+statuses = ["Open", "In Progress", "Resolved", "Closed"]
+max_results = 500
+include_history = false
+
+[storage]
+database_path = "./data/aktis-collector-jira.db"
+backup_dir = "./backups"
+retention_days = 90

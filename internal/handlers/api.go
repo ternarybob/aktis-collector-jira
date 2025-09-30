@@ -12,19 +12,20 @@ import (
 	"strings"
 	"time"
 
-	. "aktis-collector-jira/internal/common"
-	. "aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/common"
+	"aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/models"
 
 	"github.com/ternarybob/arbor"
 )
 
 // APIHandlers contains all API endpoint handlers
 type APIHandlers struct {
-	config    *Config
-	storage   Storage
+	config    *common.Config
+	storage   interfaces.Storage
 	logger    arbor.ILogger
 	startTime time.Time
-	assessor  PageAssessor
+	assessor  interfaces.PageAssessor
 }
 
 // HealthResponse represents the health check response
@@ -70,9 +71,9 @@ type CollectorStats struct {
 
 // ConfigResponse represents the configuration display response
 type ConfigResponse struct {
-	Collector *CollectorConfig `json:"collector"`
-	Storage   *StorageConfig   `json:"storage"`
-	Logging   *LoggingConfig   `json:"logging"`
+	Collector *common.CollectorConfig `json:"collector"`
+	Storage   *common.StorageConfig   `json:"storage"`
+	Logging   *common.LoggingConfig   `json:"logging"`
 }
 
 // DatabaseResponse represents database operation responses
@@ -83,7 +84,7 @@ type DatabaseResponse struct {
 }
 
 // NewAPIHandlers creates a new API handlers instance
-func NewAPIHandlers(config *Config, storage Storage, logger arbor.ILogger, assessor PageAssessor) *APIHandlers {
+func NewAPIHandlers(config *common.Config, storage interfaces.Storage, logger arbor.ILogger, assessor interfaces.PageAssessor) *APIHandlers {
 	return &APIHandlers{
 		config:    config,
 		storage:   storage,
@@ -100,8 +101,8 @@ func (h *APIHandlers) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	health := HealthResponse{
 		Status:    "healthy",
 		Timestamp: time.Now(),
-		Version:   GetVersion(),
-		Build:     GetBuild(),
+		Version:   common.GetVersion(),
+		Build:     common.GetBuild(),
 		Uptime:    time.Since(h.startTime).Seconds(),
 	}
 
@@ -314,21 +315,13 @@ func (h *APIHandlers) testDatabaseConnection() bool {
 	return err == nil
 }
 
-func getMapKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
 // storeIssuesArray stores multiple issues from an array
 func (h *APIHandlers) storeIssuesArray(issuesArray []interface{}, timestamp string) error {
 	storedCount := 0
 	errorCount := 0
 
 	// Group issues by project
-	projectTickets := make(map[string]map[string]*TicketData)
+	projectTickets := make(map[string]map[string]*models.TicketData)
 
 	for _, issueInterface := range issuesArray {
 		issueData, ok := issueInterface.(map[string]interface{})
@@ -362,14 +355,14 @@ func (h *APIHandlers) storeIssuesArray(issuesArray []interface{}, timestamp stri
 			existing, err := h.storage.LoadTickets(projectKey)
 			if err != nil {
 				// Create new map if project doesn't exist
-				projectTickets[projectKey] = make(map[string]*TicketData)
+				projectTickets[projectKey] = make(map[string]*models.TicketData)
 			} else {
 				projectTickets[projectKey] = existing
 			}
 		}
 
 		// Convert to TicketData
-		ticket := &TicketData{
+		ticket := &models.TicketData{
 			Key:       key,
 			ProjectID: projectKey,
 			Updated:   timestamp,
@@ -569,7 +562,7 @@ func (h *APIHandlers) ReceiverHandler(w http.ResponseWriter, r *http.Request) {
 	assessment, err := h.assessor.AssessPage(htmlContent, payload.URL)
 	if err != nil {
 		h.logger.Warn().Err(err).Msg("Failed to assess page, will attempt processing anyway")
-		assessment = &PageAssessment{
+		assessment = &models.PageAssessment{
 			PageType:    "unknown",
 			Confidence:  "low",
 			Collectable: false,
@@ -692,10 +685,10 @@ func (h *APIHandlers) storeExtensionData(payload ExtensionDataPayload, assessedP
 	// Handle based on page type
 	if pageType == "projectsList" {
 		// Convert to ProjectData and store
-		projects := make([]*ProjectData, 0, len(results))
+		projects := make([]*models.ProjectData, 0, len(results))
 		for _, result := range results {
 			projectMap := result
-			project := &ProjectData{
+			project := &models.ProjectData{
 				Updated: payload.Timestamp,
 			}
 			if id, ok := projectMap["id"].(string); ok {

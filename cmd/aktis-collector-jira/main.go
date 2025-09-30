@@ -13,7 +13,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"aktis-collector-jira/internal/common"
 	"aktis-collector-jira/internal/interfaces"
@@ -100,8 +99,6 @@ func main() {
 		common.PrintBanner(pluginName, environment, "Server", logFilePath)
 	}
 
-	startTime := time.Now()
-
 	// Initialize services
 	logger.Info().Msg("Initializing services...")
 
@@ -109,8 +106,7 @@ func main() {
 	storage, err := services.NewStorage(&cfg.Storage)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to initialize storage")
-		handleError(err, *quiet, environment, startTime)
-		return
+		os.Exit(1)
 	}
 	defer storage.Close()
 
@@ -173,14 +169,6 @@ func parseMode(mode string) string {
 	}
 }
 
-func fileExists(path string) bool {
-	if path == "" {
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 func showHelp() {
 	fmt.Printf("%s v%s - Jira Ticket Collector\n\n", pluginName, pluginVersion)
 	fmt.Println("Usage:")
@@ -197,9 +185,4 @@ func showHelp() {
 	fmt.Printf("  %s -mode prod                       # Run server in production mode\n", os.Args[0])
 	fmt.Printf("  %s -config /path/to/config.toml     # Use custom config file\n", os.Args[0])
 	fmt.Println("\nNote: Data collection is performed via the Chrome extension, not the collector binary.")
-}
-
-func handleError(err error, quiet bool, environment string, startTime time.Time) {
-	fmt.Printf("\n❌ Error: %v\n", err)
-	os.Exit(1)
 }
