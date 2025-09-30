@@ -1,42 +1,50 @@
 # Aktis Collector - Jira
 
-A production-ready Jira ticket collector built with the Aktis Plugin SDK, following aktis-receiver template standards.
+A production-ready Jira ticket collector built with the Aktis Plugin SDK, featuring Chrome extension-based data collection and an integrated web dashboard.
 
 ## 🎯 System Architecture
 
-This system implements a complete Jira ticket collection and analytics solution with an integrated web interface. The application operates in two modes:
+This system implements a complete Jira ticket collection and analytics solution with Chrome extension-based data capture and an integrated web interface.
 
-### **Collection Mode** (Default)
-- **Purpose**: Collects Jira tickets from configured projects in batches
-- **Technology**: Go 1.24+ with Aktis Plugin SDK
-- **Architecture**: Clean architecture following aktis-receiver standards
+### **Chrome Extension Collection**
+- **Purpose**: Browser-based data collection as you browse Jira
+- **Technology**: Chrome Extension (Manifest V3) with content scripts
+- **Architecture**: Extension sends data to local server via POST to /receiver
+- **Key Features**:
+  - Automatic data collection from Jira pages (issues, boards, search results)
+  - Manual collection via extension popup
+  - Auto-collect on page load (configurable)
+  - Support for multiple Jira page types
+  - Future: Follow links to chase project items
+  - No API credentials required (uses your existing browser session)
+
+### **Server Mode** (Web Interface + Data Receiver)
+- **Purpose**: Integrated web server with dashboard and extension data receiver
+- **Technology**: HTMX-based dynamic UI with RESTful API
 - **Storage**: BBolt database with automatic backups
 - **Key Features**:
-  - Batch processing for efficient data collection
-  - Incremental updates (only fetch changed tickets)
-  - Multi-project support with flexible configuration
-  - Configurable filtering by issue types and statuses
-  - Structured logging with arbor
-  - Version management and build flags
-
-### **Server Mode** (Web Interface)
-- **Purpose**: Integrated web server with dashboard for monitoring and analytics
-- **Technology**: HTMX-based dynamic UI with modern web standards
-- **Key Features**:
+  - Receives data from Chrome extension via /receiver endpoint
   - Real-time statistics and metrics dashboard
   - Interactive data visualization
   - Ticket filtering and search capabilities
   - Project overview and analytics
   - Responsive design optimized for all devices
-  - RESTful API endpoints for data access
+  - Structured logging with arbor
 
 ## 🏗️ Project Structure
 
 ```
 aktis-collector-jira/
 ├── cmd/
-│   └── aktis-collector-jira/    # Main application entry point
-│       └── main.go               # Startup sequence: Config → Logger → Banner
+│   ├── aktis-collector-jira/    # Main application entry point
+│   │   └── main.go               # Server mode: Config → Logger → Banner
+│   └── aktis-chrome-extension/  # Chrome extension for data collection
+│       ├── manifest.json         # Extension manifest (Manifest V3)
+│       ├── background.js         # Service worker (data forwarding)
+│       ├── content.js            # Content script (page data extraction)
+│       ├── popup.html/js         # Extension UI
+│       ├── icons/                # Extension icons (16x16, 48x48, 128x128)
+│       └── README.md             # Extension documentation
 ├── internal/
 │   ├── common/                   # Infrastructure layer (aktis-receiver template)
 │   │   ├── banner.go             # Startup banner display
@@ -158,50 +166,85 @@ retention_days = 90
 
 ### Running the Application
 
-**Collection Mode (Default):**
+**Server Mode (Required for Extension):**
 ```bash
 ./bin/aktis-collector-jira -config deployments/config.toml
 ```
 
-**Server Mode (Web Interface):**
-```bash
-./bin/aktis-collector-jira -server -config deployments/config.toml
-```
+The application now runs as a server by default, listening for data from the Chrome extension.
 
 **Command Line Options:**
 - `-version`: Show version information
 - `-help`: Show help message
 - `-config <path>`: Configuration file path (default: `./config.toml`)
 - `-mode <env>`: Environment mode: dev/development/prod/production (default: dev)
-- `-quiet`: Suppress banner output (for aktis-collector integration)
-- `-update`: Run in update mode (incremental - fetch only latest changes)
-- `-batch-size <n>`: Number of tickets to process per batch (default: 50)
-- `-server`: Run in server mode with web interface
 - `-validate`: Validate configuration file and exit
 
-**Collection Examples:**
+**Server Examples:**
 ```bash
-# Full collection in development mode
+# Start server on default port (8080)
 ./bin/aktis-collector-jira -config deployments/config.toml
 
-# Incremental update
-./bin/aktis-collector-jira -config deployments/config.toml -update
-
-# Production mode with custom batch size
-./bin/aktis-collector-jira -config deployments/config.toml -mode prod -batch-size 100
-
-# For Aktis platform integration (called by aktis-collector)
-./bin/aktis-collector-jira -config deployments/config.toml -mode prod -quiet
+# Start server in production mode
+./bin/aktis-collector-jira -config deployments/config.toml -mode prod
 ```
 
-**Server Mode Examples:**
+### Chrome Extension Setup
+
+**1. Create Extension Icons (One-time Setup):**
 ```bash
-# Start web interface on default port (8080)
-./bin/aktis-collector-jira -server -config deployments/config.toml
-
-# Start web interface in production mode
-./bin/aktis-collector-jira -server -config deployments/config.toml -mode prod
+# Run the icon creation script
+powershell.exe -ExecutionPolicy Bypass -File cmd/aktis-chrome-extension/create-icons.ps1
 ```
+
+This creates the required icon files (16x16, 48x48, 128x128) in the `cmd/aktis-chrome-extension/icons/` directory.
+
+**2. Install Extension in Chrome:**
+
+1. Start the server (required for extension to work):
+   ```bash
+   ./bin/aktis-collector-jira -config deployments/config.toml
+   ```
+
+2. Open Chrome and navigate to `chrome://extensions/`
+
+3. Enable "Developer mode" (toggle in top right corner)
+
+4. Click "Load unpacked"
+
+5. Select the directory: `cmd/aktis-chrome-extension`
+
+6. The Aktis Jira Collector extension icon should appear in your toolbar
+
+**3. Configure Extension:**
+
+1. Click the extension icon in Chrome toolbar
+
+2. Configure settings:
+   - **Server URL**: `http://localhost:8080` (or your server address)
+   - **Auto-collect**: Enable to automatically collect data when Jira pages load
+   - **Follow links**: (Future feature) Enable to automatically follow linked items
+
+3. Click "Save Settings"
+
+**4. Collect Data:**
+
+**Manual Collection:**
+- Navigate to any Jira page (issue, board, search results)
+- Click the extension icon
+- Click "Collect Current Page"
+- Data is sent to the server and stored in the database
+
+**Automatic Collection:**
+- Enable "Auto-collect" in extension settings
+- Data is automatically collected whenever you visit a Jira page
+- Activity is logged in the web dashboard
+
+**Supported Jira Pages:**
+- Issue pages: `/browse/PROJECT-123`
+- Board/Backlog: `/board/`, `/secure/RapidBoard`
+- Search results: `/issues/`
+- Project pages: `/projects/`
 
 ### Web Interface
 
@@ -209,65 +252,86 @@ retention_days = 90
 Open http://localhost:8080 in your browser (or the port configured in `web_port`)
 
 **Features:**
+- **Collection Tab**: View extension activity log and installation instructions
+- **Overview Tab**: Real-time statistics and metrics dashboard
+- **Storage Tab**: View database contents and manage stored data
+- **Config Tab**: System configuration display
 - HTMX-based dynamic UI with real-time updates
 - Interactive data visualization and analytics
-- Project overview and ticket filtering
 - Responsive design for desktop and mobile
 
-**Dashboard API Endpoints:**
-- `GET /api/dashboard` - Complete dashboard data
-- `GET /api/projects` - List of projects
-- `GET /api/tickets` - All tickets (supports filters)
-- `POST /api/refresh` - Refresh data
+**API Endpoints:**
+- `POST /receiver` - Receives data from Chrome extension
+- `GET /health` - System health check
+- `GET /status` - Collector status and metrics
+- `GET /config` - System configuration
+- `GET /database` - Database contents
+- `DELETE /database` - Clear database
 
 ## 📊 Key Features
 
-### Collector Features
-✅ **Batch Processing**: Configurable batch size for efficient collection
-✅ **Incremental Updates**: Only fetch tickets updated since last run
-✅ **Multi-Project Support**: Configure multiple Jira projects
-✅ **Flexible Filtering**: Filter by issue types, statuses, custom fields
+### Chrome Extension Features
+✅ **Browser-Based Collection**: Collect data as you browse Jira (no API tokens needed)
+✅ **Automatic Collection**: Optional auto-collect on page load
+✅ **Manual Collection**: Click to collect current page on demand
+✅ **Multi-Page Support**: Issues, boards, search results, project pages
+✅ **Structured Data Extraction**: Parses issue fields, status, priority, labels, etc.
+✅ **Configurable Server URL**: Point to any Aktis Collector server
+✅ **Real-time Feedback**: In-page notifications on collection success/failure
+✅ **Future-Ready**: Framework for link following and project chasing
+
+### Server Features
+✅ **Extension Data Receiver**: POST /receiver endpoint accepts data from extension
 ✅ **BBolt Database**: Embedded database with automatic backups and transactions
+✅ **Multi-Project Support**: Automatically organizes data by project
 ✅ **Data Retention**: Configurable cleanup of old data
 ✅ **Structured Logging**: Arbor logger with file and console output
 ✅ **Version Management**: Auto-increment build versioning with timestamps
 ✅ **Error Handling**: Comprehensive error handling and logging
-✅ **Aktis Integration**: Full compliance with Aktis Plugin SDK
+✅ **CORS Support**: Cross-origin requests enabled for extension communication
 
 ### Web Interface Features
 ✅ **Integrated Server**: Built-in web server with single-binary deployment
 ✅ **HTMX-Based UI**: Modern dynamic interface without complex JavaScript frameworks
-✅ **Real-time Updates**: Live metrics and data refresh capabilities
+✅ **Collection Activity Log**: Real-time view of extension data collection
 ✅ **Interactive Visualizations**: Charts and graphs for data analysis
 ✅ **Project Analytics**: Per-project statistics and trending
-✅ **Advanced Filtering**: Multi-dimensional ticket filtering and search
+✅ **Database Management**: View and clear stored data
 ✅ **Responsive Design**: Optimized for desktop, tablet, and mobile devices
 ✅ **RESTful API**: Clean API endpoints for external integrations
 
 ## 📈 Data Flow
 
-### Collection Mode
+### Chrome Extension Collection Flow
 ```
-Jira Cloud API
+User browses Jira in Chrome
      |
-     | [REST API Calls with Basic Auth + JQL queries]
+     | [Jira page load]
      v
-Jira Collector (internal/services/collector.go)
+Chrome Extension Content Script (content.js)
      |
-     | [Batch processing + data transformation]
+     | [DOM scraping + data extraction]
+     v
+Extension Background Worker (background.js)
+     |
+     | [POST JSON to /receiver endpoint]
+     v
+Server Receiver Handler (internal/handlers/api.go)
+     |
+     | [Data validation + parsing]
      v
 Storage Layer (internal/services/storage.go)
      |
-     | [BBolt Database: aktis-collector-jira.db]
+     | [BBolt Database transactions]
      v
-Local Database (./data/)
+Local Database (./data/aktis-collector-jira.db)
 ```
 
-### Server Mode
+### Web Dashboard Flow
 ```
 BBolt Database (./data/aktis-collector-jira.db)
      |
-     | [Direct database queries]
+     | [Read stored ticket data]
      v
 Web Server (internal/services/webserver.go)
      |
@@ -282,25 +346,45 @@ User Browser
 
 ## 📈 Data Structures
 
+### Extension Data Payload Format
+```json
+{
+  "timestamp": "2025-09-30T10:54:00Z",
+  "url": "https://company.atlassian.net/browse/PROJ-123",
+  "title": "PROJ-123: Fix login bug",
+  "data": {
+    "pageType": "issue",
+    "html": "...",
+    "issue": {
+      "key": "PROJ-123",
+      "summary": "Fix login bug",
+      "description": "Detailed description...",
+      "issueType": "Bug",
+      "status": "In Progress",
+      "priority": "High",
+      "assignee": "John Doe",
+      "labels": ["backend", "security"],
+      "components": ["Auth"]
+    }
+  },
+  "collector": {
+    "name": "aktis-jira-collector-extension",
+    "version": "0.1.0"
+  }
+}
+```
+
 ### Stored Ticket Format
 ```json
 {
-  "key": "DEV-123",
-  "project": "DEV",
-  "data": {
-    "summary": "Fix login bug",
-    "status": "In Progress",
-    "priority": "High",
-    "assignee": "John Doe",
-    "created": "2025-09-25T09:00:00Z",
-    "updated": "2025-09-26T10:00:00Z",
-    "issue_type": "Bug",
-    "description": "Detailed description..."
-  },
-  "hash": "a1b2c3d4",
-  "collected": "2025-09-26T10:30:00Z",
-  "updated": "2025-09-26T10:30:00Z",
-  "version": 1
+  "key": "PROJ-123",
+  "summary": "Fix login bug",
+  "description": "Detailed description...",
+  "type": "Bug",
+  "status": "In Progress",
+  "priority": "High",
+  "source": "extension",
+  "updated": "2025-09-30T10:54:00Z"
 }
 ```
 
@@ -361,90 +445,121 @@ require (
 
 ### Adding Features
 
-**To the Collector:**
-1. **New Issue Fields**: Modify `ExtractIssueData()` in `internal/services/jira_client.go`
-2. **Custom Processing**: Add methods to collector service in `internal/services/collector.go`
-3. **Additional Storage**: Extend storage interface in `internal/interfaces/interfaces.go` and implement in `internal/services/storage.go`
-4. **New API Endpoints**: Extend Jira client interface and implementation
+**To the Chrome Extension:**
+1. **New Page Types**: Add detection logic in `detectPageType()` in `cmd/aktis-chrome-extension/content.js`
+2. **Additional Data Fields**: Extend extraction functions (`extractIssueData()`, `extractBoardData()`, etc.)
+3. **New Selectors**: Add selector arrays for different Jira versions
+4. **Custom Processing**: Modify `collectCurrentPage()` to handle new data structures
+
+**To the Server:**
+1. **Enhanced Data Storage**: Extend `storeExtensionData()` in `internal/handlers/api.go`
+2. **New API Endpoints**: Add handlers in `internal/handlers/` directory
+3. **Additional Processing**: Extend receiver logic to handle new data types
+4. **Storage Extensions**: Extend storage interface in `internal/interfaces/interfaces.go`
 
 **To the Web Interface:**
-1. **New API Endpoints**: Add handlers in `internal/handlers/api/` directory
-2. **Additional UI Components**: Extend HTMX templates in `pages/index.html`
-3. **New Views**: Create new handler functions in `internal/handlers/ui/`
-4. **Custom Analytics**: Add calculation functions in `internal/services/webserver.go`
+1. **New UI Components**: Extend HTMX templates in `pages/index.html`
+2. **Additional Visualizations**: Add chart functions in JavaScript section
+3. **Custom Analytics**: Add calculation functions in `internal/services/webserver.go`
+4. **Activity Log Enhancements**: Add real-time updates via polling or SSE
 
 ## 🚀 Production Deployment
 
 ### Deployment Checklist
-- [ ] Configure production Jira credentials
-- [ ] Set up secure API token storage
-- [ ] Configure appropriate batch sizes
-- [ ] Set up automated collection schedules (cron/Task Scheduler)
+- [ ] Build and deploy server binary
+- [ ] Configure production server URL
+- [ ] Set up HTTPS for web interface (if exposed externally)
+- [ ] Configure firewall rules (allow port 8080 or configured port)
+- [ ] Set up log rotation
 - [ ] Configure data retention policies
 - [ ] Set up monitoring and alerting
-- [ ] Configure backup strategies
-- [ ] Set up HTTPS for web interface
-- [ ] Configure firewall rules
-- [ ] Set up log rotation
+- [ ] Configure backup strategies for BBolt database
+- [ ] Install Chrome extension on user machines
+- [ ] Configure extension with production server URL
+- [ ] Train users on manual vs auto-collect modes
 
-### Integration with Aktis Platform
+### Chrome Extension Distribution
 
-For use with the Aktis data collection platform:
+**For Team Distribution:**
 
-```bash
-./bin/aktis-collector-jira -config deployments/aktis-collector-jira.toml -mode prod -quiet
-```
+1. **Create Extension Package:**
+   - Zip the `cmd/aktis-chrome-extension` directory
+   - Distribute to team members
 
-The `-quiet` flag outputs JSON payloads compatible with `aktis-collector`.
+2. **Users Install Locally:**
+   - Extract zip file
+   - Load unpacked in Chrome (`chrome://extensions/`)
+   - Configure server URL to production server
+
+3. **Corporate Distribution (Optional):**
+   - Package extension as `.crx` file
+   - Distribute via Chrome Enterprise policies
+   - Pre-configure server URL via extension policies
+
+**Future: Chrome Web Store Publication:**
+- Package extension for Chrome Web Store
+- Submit for review
+- Publish for public/private installation
 
 ## 🔐 Security Considerations
 
-- **API Token Security**: Never commit config files with real credentials
-- **Data Privacy**: Local storage keeps sensitive data in-house
-- **Access Control**: Dashboard server should be secured with authentication in production
+- **Extension Permissions**: Extension requires access to Jira domains and localhost
+- **Data Privacy**: Data collected via extension stays local (sent to your server only)
+- **Browser Session**: Extension uses your existing Jira browser session (no credentials stored)
+- **Server Security**: Dashboard server should be secured with authentication in production
+- **CORS Configuration**: Receiver endpoint allows cross-origin requests for extension
 - **Backup Security**: Backup files contain sensitive project data
-- **Network Security**: Use HTTPS for production deployments
+- **Network Security**: Use HTTPS for production server deployments
+- **Extension Distribution**: Only install extension from trusted sources
 
 ## 📊 Performance
 
-### Collector Optimizations
-- **Batch Processing**: Reduces API calls and memory usage
-- **Incremental Updates**: Minimizes data transfer with JQL filters
-- **Efficient Hashing**: SHA256 for change detection
-- **Memory Management**: Streaming data processing
-- **Error Recovery**: Graceful handling of network issues
+### Extension Optimizations
+- **Selective Extraction**: Only collects data from supported page types
+- **Efficient DOM Parsing**: Multiple selector strategies minimize search time
+- **Async Processing**: Non-blocking collection and transmission
+- **Minimal Memory**: Cleans up after each collection
+- **Smart Auto-collect**: Only triggers on actual page loads
+
+### Server Optimizations
+- **Concurrent Handling**: Handles multiple extension submissions simultaneously
+- **Efficient Storage**: BBolt transactions minimize disk I/O
+- **Project-based Bucketing**: Fast data organization by project key
+- **Logging Control**: Configurable log levels for production
 
 ### Dashboard Optimizations
-- **Client-side Processing**: Reduces server load
-- **Efficient Charts**: Optimized Plotly.js configurations
+- **HTMX Updates**: Minimal JavaScript for fast page interactions
 - **Lazy Loading**: Load data on demand
 - **Caching**: Browser caching for static assets
+- **Polling Control**: Activity checks only when collection tab is active
 
 ## 📖 Documentation
 
+- **README.md** (this file): Complete system documentation
+- **cmd/aktis-chrome-extension/README.md**: Chrome extension documentation
 - **CLAUDE.md**: Developer documentation with build commands and architecture
-- **API Documentation**: See web interface endpoints above
+- **API Documentation**: See web interface endpoints section above
 - **Configuration**: See `deployments/aktis-collector-jira.toml` for all options
 
 ## 🎯 Use Cases
 
 ### Development Teams
-- Sprint planning with ticket distribution analysis
-- Bug tracking and resolution trends
-- Resource planning and assignee workloads
-- Real-time project status monitoring
+- **Ad-hoc Data Collection**: Collect tickets as you work without scheduled jobs
+- **Sprint Planning**: Gather tickets from board/backlog views for analysis
+- **Bug Tracking**: Collect bug tickets while triaging or reviewing
+- **Context-Aware Collection**: Collect only the data you're actively viewing
 
 ### Project Management
-- Executive dashboards with high-level metrics
-- Team performance and productivity insights
-- Quality metrics: bug rates and resolution times
-- Capacity planning with workload distribution
+- **Meeting Preparation**: Collect specific project tickets before standups/reviews
+- **Status Reports**: Gather tickets from search results for reporting
+- **Cross-Project Analysis**: Collect tickets from multiple projects as needed
+- **Real-time Data**: Always get current data since it uses your live browser session
 
-### DevOps & Operations
-- Automated data collection via cron jobs
-- Integration with monitoring infrastructure
-- Automated report generation
-- Compliance and audit trail
+### Individual Contributors
+- **Personal Tracking**: Collect your assigned tickets for time tracking
+- **Documentation**: Capture ticket details while writing documentation
+- **Knowledge Base**: Build local archive of project tickets
+- **Offline Reference**: Store ticket data for offline access
 
 ## 📝 License
 

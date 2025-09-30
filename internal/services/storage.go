@@ -130,6 +130,27 @@ func (s *storage) LoadTickets(projectKey string) (map[string]*TicketData, error)
 	return tickets, err
 }
 
+func (s *storage) LoadAllTickets() (map[string]*TicketData, error) {
+	tickets := make(map[string]*TicketData)
+
+	err := s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(ticketsBucket))
+
+		c := bucket.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var ticket TicketData
+			if err := json.Unmarshal(v, &ticket); err != nil {
+				continue
+			}
+			tickets[ticket.Key] = &ticket
+		}
+
+		return nil
+	})
+
+	return tickets, err
+}
+
 func (s *storage) GetLastUpdate(projectKey string) (string, error) {
 	var lastUpdate time.Time
 

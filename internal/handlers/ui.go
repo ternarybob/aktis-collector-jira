@@ -78,6 +78,7 @@ func (h *UIHandlers) handleGetBufferData(w http.ResponseWriter, r *http.Request)
 	// Get all stored tickets across all projects
 	allTickets := make(map[string]interface{})
 
+	// First, try to load tickets from configured projects
 	for _, project := range h.config.Projects {
 		tickets, err := h.storage.LoadTickets(project.Key)
 		if err != nil {
@@ -90,11 +91,45 @@ func (h *UIHandlers) handleGetBufferData(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Also try to discover tickets from any project (for extension-collected data)
+	// Get all tickets without filtering by project
+	allStoredTickets, err := h.storage.LoadAllTickets()
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("Failed to load all tickets")
+	} else {
+		// Organize by project key
+		projectTickets := make(map[string]map[string]*TicketData)
+		for key, ticket := range allStoredTickets {
+			// Extract project key from ticket key (e.g., "PROJ-123" -> "PROJ")
+			projectKey := ""
+			for i, c := range key {
+				if c == '-' {
+					projectKey = key[:i]
+					break
+				}
+			}
+
+			if projectKey != "" {
+				if projectTickets[projectKey] == nil {
+					projectTickets[projectKey] = make(map[string]*TicketData)
+				}
+				projectTickets[projectKey][key] = ticket
+			}
+		}
+
+		// Merge with configured projects
+		for pk, tickets := range projectTickets {
+			if len(tickets) > 0 {
+				allTickets[pk] = tickets
+			}
+		}
+	}
+
 	if len(allTickets) == 0 {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<div class="metric">
 			<div class="metric-header">No data available</div>
-			<p>No Jira tickets have been collected yet. Run the collector to gather ticket data.</p>
+			<p>No Jira tickets have been collected yet. Use the Chrome extension to collect ticket data.</p>
 		</div>`))
 		return
 	}

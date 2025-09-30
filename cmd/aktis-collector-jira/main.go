@@ -39,7 +39,7 @@ func main() {
 		update         = flag.Bool("update", false, "Run in update mode (fetch only latest changes)")
 		batchSize      = flag.Int("batch-size", 50, "Number of tickets to process in each batch")
 		validateConfig = flag.Bool("validate", false, "Validate configuration file and exit")
-		server         = flag.Bool("server", false, "Run in server mode with web interface")
+		collect        = flag.Bool("collect", false, "Run in single collection mode (default is server mode)")
 	)
 	flag.Parse()
 
@@ -101,21 +101,21 @@ func main() {
 
 	// Display startup banner after initial log messages (to ensure log file exists)
 	if !*quiet {
-		collectionMode := "Collection"
-		if *update {
-			collectionMode = "Update"
+		operatingMode := "Server"
+		if *collect {
+			operatingMode = "Collection"
+			if *update {
+				operatingMode = "Update"
+			}
 		}
 		logFilePath := common.GetLogFilePath()
-		common.PrintBanner(pluginName, environment, collectionMode, logFilePath)
+		common.PrintBanner(pluginName, environment, operatingMode, logFilePath)
 	}
 
 	startTime := time.Now()
 
 	// Initialize services
 	logger.Info().Msg("Initializing services...")
-
-	// Create Jira client
-	jiraClient := services.NewJiraClient(&cfg.Jira)
 
 	// Create storage
 	storage, err := services.NewStorage(&cfg.Storage)
@@ -127,17 +127,22 @@ func main() {
 	defer storage.Close()
 
 	// Create collector
-	collector := services.NewCollector(cfg, jiraClient, storage)
+	collector, err := services.NewCollector(cfg, storage)
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to initialize collector")
+		handleError(err, *quiet, environment, startTime)
+		return
+	}
 	defer collector.Close()
 
 	logger.Info().Msg("Services initialized successfully")
 
-	if *server {
-		// Server mode - start web server and run continuously
-		runServerMode(cfg, collector, storage, logger, environment)
-	} else {
+	if *collect {
 		// Single run mode - collect data and exit
 		runCollectionMode(collector, *update, *batchSize, *quiet, environment, startTime, logger)
+	} else {
+		// Server mode (default) - start web server and run continuously
+		runServerMode(cfg, collector, storage, logger, environment)
 	}
 
 	logger.Info().Msg("Aktis Collector Jira Service shutdown complete")
@@ -161,7 +166,7 @@ func runServerMode(cfg *common.Config, collector interfaces.Collector, storage i
 	}
 
 	logger.Info().
-		Int("port", cfg.Collector.WebPort).
+		Int("port", cfg.Collector.Port).
 		Msg("Web server started successfully")
 
 	// Set up signal handling for graceful shutdown
@@ -259,17 +264,17 @@ func showHelp() {
 	fmt.Println("  -quiet              Suppress banner output")
 	fmt.Println("  -version            Show version information")
 	fmt.Println("  -help               Show help message")
-	fmt.Println("  -update             Run in update mode (fetch only latest changes)")
+	fmt.Println("  -collect            Run in single collection mode and exit (default is server mode)")
+	fmt.Println("  -update             Run in update mode (fetch only latest changes) - requires -collect")
 	fmt.Println("  -batch-size int     Number of tickets to process in each batch (default 50)")
 	fmt.Println("  -validate           Validate configuration file and exit")
-	fmt.Println("  -server             Run in server mode with web interface")
 	fmt.Println("\nExamples:")
-	fmt.Printf("  %s                                  # Run in development mode\n", os.Args[0])
-	fmt.Printf("  %s -mode prod                       # Run in production mode\n", os.Args[0])
-	fmt.Printf("  %s -update                          # Update existing tickets\n", os.Args[0])
-	fmt.Printf("  %s -config /path/to/config.json     # Use custom config file\n", os.Args[0])
-	fmt.Printf("  %s -server                          # Run with web interface on port 8080\n", os.Args[0])
-	fmt.Printf("  %s -quiet                           # JSON output for aktis-collector\n", os.Args[0])
+	fmt.Printf("  %s                                  # Run in server mode (default)\n", os.Args[0])
+	fmt.Printf("  %s -mode prod                       # Run server in production mode\n", os.Args[0])
+	fmt.Printf("  %s -collect                         # Single collection run and exit\n", os.Args[0])
+	fmt.Printf("  %s -collect -update                 # Update existing tickets and exit\n", os.Args[0])
+	fmt.Printf("  %s -config /path/to/config.toml     # Use custom config file\n", os.Args[0])
+	fmt.Printf("  %s -collect -quiet                  # JSON output for aktis-collector\n", os.Args[0])
 }
 
 func handleError(err error, quiet bool, environment string, startTime time.Time) {

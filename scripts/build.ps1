@@ -173,6 +173,28 @@ if ($Test) {
     Write-Host "Tests passed!" -ForegroundColor Green
 }
 
+# Stop executing process if it's running (skip for Docker builds)
+if (-not $Docker) {
+    try {
+        $processName = "aktis-collector-jira"
+        $process = Get-Process -Name $processName -ErrorAction SilentlyContinue
+
+        if ($process) {
+            Write-Host "Stopping existing Aktis Collector Jira process..." -ForegroundColor Yellow
+            Stop-Process -Name $processName -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1  # Give process time to fully terminate
+            Write-Host "Process stopped successfully" -ForegroundColor Green
+        } else {
+            Write-Host "No Aktis Collector Jira process found running" -ForegroundColor Gray
+        }
+    }
+    catch {
+        Write-Warning "Could not stop Aktis Collector Jira process: $($_.Exception.Message)"
+    }
+} else {
+    Write-Host "Docker build - skipping local process check" -ForegroundColor Cyan
+}
+
 # Download dependencies
 Write-Host "Downloading dependencies..." -ForegroundColor Yellow
 go mod download
@@ -255,6 +277,70 @@ if (Test-Path $pagesSourcePath) {
     Write-Host "Copied web interface: pages/ -> bin/pages/" -ForegroundColor Green
 }
 
+# Build and deploy Chrome Extension
+Write-Host "`nBuilding Chrome Extension..." -ForegroundColor Yellow
+
+$extensionSourcePath = Join-Path -Path $projectRoot -ChildPath "cmd\aktis-chrome-extension"
+$extensionDestPath = Join-Path -Path $binDir -ChildPath "aktis-chrome-extension"
+
+# Check if extension source exists
+if (Test-Path $extensionSourcePath) {
+    # Create extension directory in bin
+    if (Test-Path $extensionDestPath) {
+        Remove-Item -Path $extensionDestPath -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $extensionDestPath | Out-Null
+
+    # Copy extension files (exclude create-icons.ps1 as it's a dev tool)
+    $extensionFiles = @(
+        "manifest.json",
+        "background.js",
+        "content.js",
+        "popup.html",
+        "popup.js",
+        "README.md"
+    )
+
+    foreach ($file in $extensionFiles) {
+        $sourcePath = Join-Path -Path $extensionSourcePath -ChildPath $file
+        if (Test-Path $sourcePath) {
+            Copy-Item -Path $sourcePath -Destination $extensionDestPath
+        } else {
+            Write-Warning "Extension file not found: $file"
+        }
+    }
+
+    # Copy icons directory
+    $iconsSourcePath = Join-Path -Path $extensionSourcePath -ChildPath "icons"
+    $iconsDestPath = Join-Path -Path $extensionDestPath -ChildPath "icons"
+
+    if (Test-Path $iconsSourcePath) {
+        Copy-Item -Path $iconsSourcePath -Destination $iconsDestPath -Recurse
+        Write-Host "Copied extension icons: icons/ -> bin/aktis-chrome-extension/icons/" -ForegroundColor Green
+    } else {
+        # Icons don't exist, create them
+        Write-Host "Icons not found, creating placeholder icons..." -ForegroundColor Yellow
+
+        New-Item -ItemType Directory -Path $iconsDestPath -Force | Out-Null
+
+        $createIconScript = Join-Path -Path $extensionSourcePath -ChildPath "create-icons.ps1"
+        if (Test-Path $createIconScript) {
+            & powershell.exe -ExecutionPolicy Bypass -File $createIconScript
+            # Copy newly created icons
+            if (Test-Path $iconsSourcePath) {
+                Copy-Item -Path $iconsSourcePath -Destination $iconsDestPath -Recurse -Force
+                Write-Host "Created and copied extension icons" -ForegroundColor Green
+            }
+        } else {
+            Write-Warning "Icon creation script not found, extension may not have icons"
+        }
+    }
+
+    Write-Host "Deployed Chrome Extension: bin/aktis-chrome-extension/" -ForegroundColor Green
+} else {
+    Write-Warning "Chrome extension source not found at: $extensionSourcePath"
+}
+
 # Verify executable was created
 if (-not (Test-Path $collectorOutputPath)) {
     Write-Error "Build completed but executable not found: $collectorOutputPath"
@@ -271,6 +357,7 @@ Write-Host "Environment: $Environment" -ForegroundColor Green
 Write-Host "Version: $($versionInfo.Version)" -ForegroundColor Green
 Write-Host "Build: $($versionInfo.Build)" -ForegroundColor Green
 Write-Host "Collector Output: $collectorOutputPath ($fileSizeMB MB)" -ForegroundColor Green
+Write-Host "Extension Output: $extensionDestPath" -ForegroundColor Green
 Write-Host "Build Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
 
 if ($Test) {
@@ -282,4 +369,10 @@ if ($Clean) {
 }
 
 Write-Host "`nBuild completed successfully!" -ForegroundColor Green
-Write-Host "Collector: $collectorOutputPath" -ForegroundColor Cyan
+Write-Host "Server: $collectorOutputPath" -ForegroundColor Cyan
+Write-Host "Extension: $extensionDestPath" -ForegroundColor Cyan
+Write-Host "`nTo install extension:" -ForegroundColor Yellow
+Write-Host "  1. Open Chrome and go to chrome://extensions/" -ForegroundColor Gray
+Write-Host "  2. Enable 'Developer mode'" -ForegroundColor Gray
+Write-Host "  3. Click 'Load unpacked'" -ForegroundColor Gray
+Write-Host "  4. Select: $extensionDestPath" -ForegroundColor Gray

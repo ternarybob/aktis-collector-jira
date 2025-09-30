@@ -10,6 +10,11 @@ type JiraClient interface {
 	BuildJQL(projectKey string, issueTypes, statuses []string, updatedAfter string) string
 }
 
+type JiraScraper interface {
+	ScrapeProject(projectKey string, batchSize int) ([]*TicketData, error)
+	Close() error
+}
+
 type SearchResponse struct {
 	Issues     []Issue `json:"issues"`
 	StartAt    int     `json:"startAt"`
@@ -24,12 +29,14 @@ type Issue struct {
 
 type Collector interface {
 	CollectAllTickets(batchSize int) ([]plugin.Payload, error)
+	CollectWithMethod(method string, batchSize int) ([]plugin.Payload, error)
 	Close() error
 }
 
 type Storage interface {
 	SaveTickets(projectKey string, tickets map[string]*TicketData) error
 	LoadTickets(projectKey string) (map[string]*TicketData, error)
+	LoadAllTickets() (map[string]*TicketData, error)
 	GetLastUpdate(projectKey string) (string, error)
 	Close() error
 }

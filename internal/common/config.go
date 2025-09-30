@@ -23,14 +23,30 @@ type CollectorConfig struct {
 	Name        string `toml:"name"`
 	Environment string `toml:"environment"`
 	SendLimit   int    `toml:"send_limit"`
-	WebPort     int    `toml:"web_port"`
+	Port        int    `toml:"port"`
+	WebPort     int    `toml:"-"` // Deprecated: use Port instead
 }
 
 type JiraConfig struct {
-	BaseURL  string `toml:"base_url"`
+	Method        []string      `toml:"method"`
+	BaseURL       string        `toml:"base_url"`
+	Timeout       int           `toml:"timeout_seconds"`
+	APIConfig     APIConfig     `toml:"api"`
+	ScraperConfig ScraperConfig `toml:"scraper"`
+}
+
+type APIConfig struct {
 	Username string `toml:"username"`
 	APIToken string `toml:"api_token"`
-	Timeout  int    `toml:"timeout_seconds"`
+}
+
+type ScraperConfig struct {
+	UseExistingBrowser bool   `toml:"use_existing_browser"`
+	RemoteDebugPort    int    `toml:"remote_debug_port"`
+	BrowserPath        string `toml:"browser_path"`
+	UserDataDir        string `toml:"user_data_dir"`
+	Headless           bool   `toml:"headless"`
+	WaitBeforeScrape   int    `toml:"wait_before_scrape_ms"`
 }
 
 type ProjectsList struct {
@@ -70,16 +86,27 @@ func DefaultConfig() *Config {
 
 	return &Config{
 		Collector: CollectorConfig{
-			Name:        "aktis-collector-jira",
+			Name:        execName,
 			Environment: "development",
 			SendLimit:   100,
-			WebPort:     8080,
+			Port:        8080,
 		},
 		Jira: JiraConfig{
-			BaseURL:  "https://your-company.atlassian.net",
-			Username: "your-email@company.com",
-			APIToken: "your-api-token",
-			Timeout:  30,
+			Method:  []string{"api"},
+			BaseURL: "https://your-company.atlassian.net",
+			Timeout: 30,
+			APIConfig: APIConfig{
+				Username: "your-email@company.com",
+				APIToken: "your-api-token",
+			},
+			ScraperConfig: ScraperConfig{
+				UseExistingBrowser: false,
+				RemoteDebugPort:    9222,
+				BrowserPath:        "",
+				UserDataDir:        "",
+				Headless:           true,
+				WaitBeforeScrape:   1000,
+			},
 		},
 		Projects: []ProjectConfig{
 			{
@@ -110,7 +137,28 @@ func LoadConfig(configFile string) (*Config, error) {
 	config := DefaultConfig()
 
 	if configFile == "" {
-		return config, nil
+		// Auto-detect config file
+		execPath, _ := os.Executable()
+		execDir := filepath.Dir(execPath)
+		execName := filepath.Base(execPath)
+		execName = execName[:len(execName)-len(filepath.Ext(execName))]
+
+		possiblePaths := []string{
+			filepath.Join(execDir, execName+".toml"),
+			filepath.Join(execDir, "config.toml"),
+			"config.toml",
+		}
+
+		for _, path := range possiblePaths {
+			if _, err := os.Stat(path); err == nil {
+				configFile = path
+				break
+			}
+		}
+
+		if configFile == "" {
+			return config, nil
+		}
 	}
 
 	data, err := os.ReadFile(configFile)
@@ -160,16 +208,28 @@ func applyEnvOverrides(config *Config) {
 	if jiraURL := os.Getenv("JIRA_BASE_URL"); jiraURL != "" {
 		config.Jira.BaseURL = jiraURL
 	}
-	if jiraUsername := os.Getenv("JIRA_USERNAME"); jiraUsername != "" {
-		config.Jira.Username = jiraUsername
+	if jiraUsername := os.Getenv("JIRA_API_USERNAME"); jiraUsername != "" {
+		config.Jira.APIConfig.Username = jiraUsername
 	}
 	if jiraToken := os.Getenv("JIRA_API_TOKEN"); jiraToken != "" {
-		config.Jira.APIToken = jiraToken
+		config.Jira.APIConfig.APIToken = jiraToken
 	}
 	if timeoutStr := os.Getenv("JIRA_TIMEOUT"); timeoutStr != "" {
 		if timeout, err := strconv.Atoi(timeoutStr); err == nil {
 			config.Jira.Timeout = timeout
 		}
+	}
+	if useExisting := os.Getenv("JIRA_SCRAPER_USE_EXISTING"); useExisting != "" {
+		config.Jira.ScraperConfig.UseExistingBrowser = useExisting == "true" || useExisting == "1"
+	}
+	if browserPath := os.Getenv("JIRA_SCRAPER_BROWSER_PATH"); browserPath != "" {
+		config.Jira.ScraperConfig.BrowserPath = browserPath
+	}
+	if userDataDir := os.Getenv("JIRA_SCRAPER_USER_DATA_DIR"); userDataDir != "" {
+		config.Jira.ScraperConfig.UserDataDir = userDataDir
+	}
+	if headless := os.Getenv("JIRA_SCRAPER_HEADLESS"); headless != "" {
+		config.Jira.ScraperConfig.Headless = headless == "true" || headless == "1"
 	}
 
 	if dbPath := os.Getenv("DATABASE_PATH"); dbPath != "" {
@@ -196,15 +256,40 @@ func applyEnvOverrides(config *Config) {
 }
 
 func (c *Config) Validate() error {
+	if len(c.Jira.Method) == 0 {
+		c.Jira.Method = []string{"api"}
+	}
+
+	for _, method := range c.Jira.Method {
+		if method != "api" && method != "scraper" {
+			return fmt.Errorf("jira method must be 'api' or 'scraper', got '%s'", method)
+		}
+	}
+
 	if c.Jira.BaseURL == "" {
 		return fmt.Errorf("jira base_url is required")
 	}
-	if c.Jira.Username == "" {
-		return fmt.Errorf("jira username is required")
+
+	hasAPI := false
+	for _, method := range c.Jira.Method {
+		if method == "api" {
+			hasAPI = true
+			break
+		}
 	}
-	if c.Jira.APIToken == "" {
-		return fmt.Errorf("jira api_token is required")
+
+	if hasAPI {
+		if c.Jira.APIConfig.Username == "" {
+			return fmt.Errorf("jira.api.username is required when method includes 'api'")
+		}
+		if c.Jira.APIConfig.APIToken == "" {
+			return fmt.Errorf("jira.api.api_token is required when method includes 'api'")
+		}
 	}
+
+	// No additional validation needed for scraper when using existing browser
+	// Remote debugging doesn't require user_data_dir
+
 	if len(c.Projects) == 0 {
 		return fmt.Errorf("at least one project must be configured")
 	}
@@ -218,6 +303,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Collector.SendLimit <= 0 {
 		c.Collector.SendLimit = 100
+	}
+
+	// Support legacy web_port field and migrate to port
+	if c.Collector.WebPort > 0 && c.Collector.Port == 0 {
+		c.Collector.Port = c.Collector.WebPort
+	}
+
+	if c.Collector.Port <= 0 {
+		c.Collector.Port = 8080
 	}
 
 	validLogLevels := []string{"debug", "info", "warn", "error", "fatal", "panic"}
@@ -249,4 +343,29 @@ func (c *Config) Validate() error {
 
 func (c *Config) IsProduction() bool {
 	return c.Logging.Level == "warn" || c.Logging.Level == "error" || c.Logging.Level == "fatal"
+}
+
+func (c *Config) UsesAPI() bool {
+	for _, method := range c.Jira.Method {
+		if method == "api" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Config) UsesScraper() bool {
+	for _, method := range c.Jira.Method {
+		if method == "scraper" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Config) GetPrimaryMethod() string {
+	if len(c.Jira.Method) > 0 {
+		return c.Jira.Method[0]
+	}
+	return "api"
 }

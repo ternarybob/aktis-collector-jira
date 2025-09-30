@@ -17,18 +17,29 @@ import (
 type collector struct {
 	config  *Config
 	client  JiraClient
+	scraper JiraScraper
 	storage Storage
 }
 
-func NewCollector(config *Config, client JiraClient, storage Storage) Collector {
-	return &collector{
+func NewCollector(config *Config, storage Storage) (Collector, error) {
+	c := &collector{
 		config:  config,
-		client:  client,
 		storage: storage,
 	}
+
+	// Only initialize API client at startup (lightweight)
+	// Scraper will be lazily initialized when first needed (to avoid opening browser)
+	if config.UsesAPI() {
+		c.client = NewJiraClient(&config.Jira)
+	}
+
+	return c, nil
 }
 
 func (c *collector) Close() error {
+	if c.scraper != nil {
+		c.scraper.Close()
+	}
 	if c.storage != nil {
 		return c.storage.Close()
 	}
@@ -54,42 +65,96 @@ func (c *collector) CollectAllTickets(batchSize int) ([]plugin.Payload, error) {
 	return allPayloads, nil
 }
 
+func (c *collector) CollectWithMethod(method string, batchSize int) ([]plugin.Payload, error) {
+	var allPayloads []plugin.Payload
+
+	for _, project := range c.config.Projects {
+		payloads, err := c.collectProjectTicketsWithMethod(project, batchSize, method)
+		if err != nil {
+			return nil, fmt.Errorf("failed to collect tickets for project %s: %w", project.Key, err)
+		}
+		allPayloads = append(allPayloads, payloads...)
+	}
+
+	sendLimit := c.config.Collector.SendLimit
+	if sendLimit > 0 && len(allPayloads) > sendLimit {
+		allPayloads = allPayloads[:sendLimit]
+	}
+
+	return allPayloads, nil
+}
+
 func (c *collector) collectProjectTickets(project ProjectConfig, batchSize int) ([]plugin.Payload, error) {
+	return c.collectProjectTicketsWithMethod(project, batchSize, c.config.GetPrimaryMethod())
+}
+
+func (c *collector) collectProjectTicketsWithMethod(project ProjectConfig, batchSize int, method string) ([]plugin.Payload, error) {
 	var allPayloads []plugin.Payload
 	ticketsData := make(map[string]*TicketData)
 
-	jql := c.client.BuildJQL(project.Key, project.IssueTypes, project.Statuses, "")
-	startAt := 0
+	if method == "scraper" {
+		// Create scraper instance on-demand (connects to existing browser)
+		scraper, err := NewJiraScraper(&c.config.Jira)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to browser: %w", err)
+		}
+		defer scraper.Close()
 
-	for {
-		response, err := c.client.SearchIssues(jql, project.MaxResults, startAt)
+		tickets, err := scraper.ScrapeProject(project.Key, project.MaxResults)
 		if err != nil {
 			return nil, err
 		}
 
-		for _, issue := range response.Issues {
-			ticket := c.issueToTicketData(&issue, project.Key)
-			ticketsData[ticket.Key] = &ticket
+		for _, ticket := range tickets {
+			ticketsData[ticket.Key] = ticket
 
 			payload := plugin.Payload{
 				Timestamp: time.Now(),
-				Type:      fmt.Sprintf("jira_%s", c.getIssueType(&issue)),
-				Data:      c.extractIssueData(&issue),
+				Type:      fmt.Sprintf("jira_%s", strings.ToLower(strings.ReplaceAll(ticket.IssueType, " ", "_"))),
+				Data:      c.ticketDataToMap(ticket),
 				Metadata: map[string]string{
 					"project":   project.Key,
-					"ticket_id": issue.Key,
-					"source":    "jira",
+					"ticket_id": ticket.Key,
+					"source":    "jira_scraper",
 					"mode":      "full_collection",
 				},
 			}
 			allPayloads = append(allPayloads, payload)
 		}
+	} else {
+		jql := c.client.BuildJQL(project.Key, project.IssueTypes, project.Statuses, "")
+		startAt := 0
 
-		if startAt+len(response.Issues) >= response.Total {
-			break
+		for {
+			response, err := c.client.SearchIssues(jql, project.MaxResults, startAt)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, issue := range response.Issues {
+				ticket := c.issueToTicketData(&issue, project.Key)
+				ticketsData[ticket.Key] = &ticket
+
+				payload := plugin.Payload{
+					Timestamp: time.Now(),
+					Type:      fmt.Sprintf("jira_%s", c.getIssueType(&issue)),
+					Data:      c.extractIssueData(&issue),
+					Metadata: map[string]string{
+						"project":   project.Key,
+						"ticket_id": issue.Key,
+						"source":    "jira_api",
+						"mode":      "full_collection",
+					},
+				}
+				allPayloads = append(allPayloads, payload)
+			}
+
+			if startAt+len(response.Issues) >= response.Total {
+				break
+			}
+
+			startAt += batchSize
 		}
-
-		startAt += batchSize
 	}
 
 	if err := c.storage.SaveTickets(project.Key, ticketsData); err != nil {
@@ -279,4 +344,28 @@ func (c *collector) generateDataHash(data map[string]interface{}) string {
 
 	hash := sha256.Sum256(jsonData)
 	return hex.EncodeToString(hash[:8])
+}
+
+func (c *collector) ticketDataToMap(ticket *TicketData) map[string]interface{} {
+	data := make(map[string]interface{})
+
+	data["key"] = ticket.Key
+	data["summary"] = ticket.Summary
+	data["description"] = ticket.Description
+	data["issue_type"] = ticket.IssueType
+	data["status"] = ticket.Status
+	data["priority"] = ticket.Priority
+	data["created"] = ticket.Created
+	data["updated"] = ticket.Updated
+	data["reporter"] = ticket.Reporter
+	data["assignee"] = ticket.Assignee
+	data["labels"] = ticket.Labels
+	data["components"] = ticket.Components
+	data["hash"] = ticket.Hash
+
+	for key, value := range ticket.CustomFields {
+		data[key] = value
+	}
+
+	return data
 }

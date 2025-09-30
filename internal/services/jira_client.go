@@ -23,7 +23,7 @@ type jiraClient struct {
 func NewJiraClient(config *JiraConfig) JiraClient {
 	client := resty.New().
 		SetBaseURL(config.BaseURL).
-		SetBasicAuth(config.Username, config.APIToken).
+		SetBasicAuth(config.APIConfig.Username, config.APIConfig.APIToken).
 		SetTimeout(time.Duration(config.Timeout)*time.Second).
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Accept", "application/json")
@@ -31,8 +31,8 @@ func NewJiraClient(config *JiraConfig) JiraClient {
 	return &jiraClient{
 		client:   client,
 		baseURL:  config.BaseURL,
-		username: config.Username,
-		apiToken: config.APIToken,
+		username: config.APIConfig.Username,
+		apiToken: config.APIConfig.APIToken,
 	}
 }
 

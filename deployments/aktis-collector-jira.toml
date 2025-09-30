@@ -1,15 +1,59 @@
 # Aktis Collector - Jira Configuration
 
 [collector]
+# Collector name (defaults to executable name without extension)
 name = "aktis-collector-jira"
 environment = "development"
-send_limit = 100  # Maximum number of payloads to send per run (default: 100)
+# Maximum number of payloads to send per run (default: 100)
+send_limit = 100
+# Web interface port (default: 8080)
+port = 8080
 
 [jira]
+# Collection methods: ["api"] or ["scraper"] or ["api", "scraper"]
+# - "api": Direct REST API access (requires username and api_token)
+# - "scraper": Browser-based scraping (useful when OAuth2/SSO is required)
+# First method in list is used as primary
+method = ["api"]
+
 base_url = "https://your-company.atlassian.net"
+timeout_seconds = 30
+
+[jira.api]
+# API authentication settings (required when method includes "api")
 username = "your-email@company.com"
 api_token = "your-jira-api-token"
-timeout_seconds = 30
+
+[jira.scraper]
+# Scraper-specific settings (only used when method includes "scraper")
+
+# Use an existing authenticated browser session
+# Set to true if you need to login via OAuth2/Microsoft Authenticator
+# IMPORTANT: When true, you must start Chrome with remote debugging enabled:
+#   Windows: chrome.exe --remote-debugging-port=9222
+#   Linux: google-chrome --remote-debugging-port=9222
+#   macOS: /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+use_existing_browser = false
+
+# Remote debugging port (default: 9222)
+# Used to connect to an existing Chrome instance
+remote_debug_port = 9222
+
+# Path to Chrome/Edge executable (only used when use_existing_browser = false)
+browser_path = ""
+
+# User data directory for the browser profile (only used when use_existing_browser = false)
+# Windows Chrome: "C:\\Users\\YourUsername\\AppData\\Local\\Google\\Chrome\\User Data"
+# Windows Edge: "C:\\Users\\YourUsername\\AppData\\Local\\Microsoft\\Edge\\User Data"
+# Linux Chrome: "/home/yourusername/.config/google-chrome"
+# macOS Chrome: "/Users/yourusername/Library/Application Support/Google/Chrome"
+user_data_dir = ""
+
+# Run browser in headless mode (no visible window, only used when use_existing_browser = false)
+headless = true
+
+# Wait time in milliseconds before starting scrape (to allow page load)
+wait_before_scrape_ms = 1000
 
 [projects]
 # List of project keys to collect from

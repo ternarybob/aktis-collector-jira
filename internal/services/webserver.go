@@ -58,7 +58,7 @@ func NewWebServer(cfg *Config, collector Collector, storage Storage, logger arbo
 		apiHandlers: apiHandlers,
 		uiHandlers:  uiHandlers,
 		server: &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.Collector.WebPort),
+			Addr:    fmt.Sprintf(":%d", cfg.Collector.Port),
 			Handler: mux,
 		},
 	}
@@ -68,6 +68,8 @@ func NewWebServer(cfg *Config, collector Collector, storage Storage, logger arbo
 	mux.HandleFunc("/status", ws.loggingMiddleware(apiHandlers.StatusHandler))
 	mux.HandleFunc("/database", ws.loggingMiddleware(apiHandlers.DatabaseHandler))
 	mux.HandleFunc("/config", ws.loggingMiddleware(apiHandlers.ConfigHandler))
+	mux.HandleFunc("/collect", ws.loggingMiddleware(apiHandlers.CollectHandler))
+	mux.HandleFunc("/receiver", ws.loggingMiddleware(apiHandlers.ReceiverHandler))
 
 	// Register UI endpoints if available
 	if uiHandlers != nil {
@@ -84,7 +86,7 @@ func (ws *webServer) Start(ctx context.Context) error {
 	ws.startTime = time.Now()
 
 	go func() {
-		ws.logger.Info().Int("port", ws.config.Collector.WebPort).Msg("Starting web server")
+		ws.logger.Info().Int("port", ws.config.Collector.Port).Msg("Starting web server")
 		if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			ws.logger.Error().Err(err).Msg("Web server error")
 		}

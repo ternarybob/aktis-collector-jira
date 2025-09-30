@@ -8,6 +8,7 @@ import (
 
 	. "aktis-collector-jira/internal/common"
 	. "aktis-collector-jira/internal/interfaces"
+	plugin "github.com/ternarybob/aktis-plugin-sdk"
 	"github.com/ternarybob/arbor"
 )
 
@@ -196,10 +197,14 @@ func (h *APIHandlers) ConfigHandler(w http.ResponseWriter, r *http.Request) {
 		Storage:   &h.config.Storage,
 		Logging:   &h.config.Logging,
 		Jira: &JiraConfig{
-			BaseURL:  h.config.Jira.BaseURL,
-			Username: h.config.Jira.Username,
-			APIToken: "***REDACTED***", // Don't expose API token
-			Timeout:  h.config.Jira.Timeout,
+			Method:  h.config.Jira.Method,
+			BaseURL: h.config.Jira.BaseURL,
+			Timeout: h.config.Jira.Timeout,
+			APIConfig: APIConfig{
+				Username: h.config.Jira.APIConfig.Username,
+				APIToken: "***REDACTED***", // Don't expose API token
+			},
+			ScraperConfig: h.config.Jira.ScraperConfig,
 		},
 	}
 
@@ -305,8 +310,301 @@ func (h *APIHandlers) testDatabaseConnection() bool {
 
 func (h *APIHandlers) testJiraConnection() bool {
 	// Basic test - check if Jira config is valid
-	return h.config.Jira.BaseURL != "" &&
-		h.config.Jira.Username != "" &&
-		h.config.Jira.APIToken != "" &&
-		h.config.Jira.APIToken != "your-api-token"
+	if h.config.Jira.BaseURL == "" {
+		return false
+	}
+
+	// If using API method, check API credentials
+	if h.config.UsesAPI() {
+		return h.config.Jira.APIConfig.Username != "" &&
+			h.config.Jira.APIConfig.APIToken != "" &&
+			h.config.Jira.APIConfig.APIToken != "your-api-token"
+	}
+
+	// If using scraper method, consider it valid
+	if h.config.UsesScraper() {
+		return true
+	}
+
+	return false
+}
+
+// CollectionResponse represents the response from a collection request
+type CollectionResponse struct {
+	Success       bool      `json:"success"`
+	Message       string    `json:"message"`
+	TicketsCount  int       `json:"tickets_count"`
+	ProjectsCount int       `json:"projects_count"`
+	Duration      string    `json:"duration"`
+	Timestamp     time.Time `json:"timestamp"`
+	Error         string    `json:"error,omitempty"`
+}
+
+// CollectRequest represents the collection request from UI
+type CollectRequest struct {
+	Method    string `json:"method"`     // "api" or "scraper"
+	BatchSize int    `json:"batch_size"` // Default 50
+}
+
+// CollectHandler triggers a collection/scrape operation
+func (h *APIHandlers) CollectHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body for method selection
+	var req CollectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// If no body provided, use query params as fallback
+		req.Method = r.URL.Query().Get("method")
+		if req.Method == "" {
+			req.Method = h.config.GetPrimaryMethod()
+		}
+		req.BatchSize = 50
+		if bs := r.URL.Query().Get("batch_size"); bs != "" {
+			fmt.Sscanf(bs, "%d", &req.BatchSize)
+		}
+	}
+
+	if req.BatchSize <= 0 {
+		req.BatchSize = 50
+	}
+
+	startTime := time.Now()
+	h.logger.Info().
+		Str("method", req.Method).
+		Int("batch_size", req.BatchSize).
+		Msg("Starting collection via web interface")
+
+	// Trigger collection with specified method
+	payloads, err := h.collectWithMethod(req.Method, req.BatchSize)
+
+	duration := time.Since(startTime)
+
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Collection failed via web interface")
+		response := CollectionResponse{
+			Success:   false,
+			Message:   "Collection failed",
+			Error:     err.Error(),
+			Duration:  duration.String(),
+			Timestamp: time.Now(),
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	h.logger.Info().
+		Int("tickets", len(payloads)).
+		Str("duration", duration.String()).
+		Msg("Collection completed via web interface")
+
+	response := CollectionResponse{
+		Success:       true,
+		Message:       "Collection completed successfully",
+		TicketsCount:  len(payloads),
+		ProjectsCount: len(h.config.Projects),
+		Duration:      duration.String(),
+		Timestamp:     time.Now(),
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// collectWithMethod performs collection using the specified method
+func (h *APIHandlers) collectWithMethod(method string, batchSize int) ([]plugin.Payload, error) {
+	var allPayloads []plugin.Payload
+
+	for _, project := range h.config.Projects {
+		payloads, err := h.collectProjectWithMethod(project, batchSize, method)
+		if err != nil {
+			return nil, fmt.Errorf("failed to collect tickets for project %s: %w", project.Key, err)
+		}
+		allPayloads = append(allPayloads, payloads...)
+	}
+
+	sendLimit := h.config.Collector.SendLimit
+	if sendLimit > 0 && len(allPayloads) > sendLimit {
+		allPayloads = allPayloads[:sendLimit]
+	}
+
+	return allPayloads, nil
+}
+
+// collectProjectWithMethod collects a single project using specified method
+func (h *APIHandlers) collectProjectWithMethod(project ProjectConfig, batchSize int, method string) ([]plugin.Payload, error) {
+	// Use collector's method-specific collection
+	return h.collector.CollectWithMethod(method, batchSize)
+}
+
+// ExtensionDataPayload represents data received from Chrome extension
+type ExtensionDataPayload struct {
+	Timestamp string                 `json:"timestamp"`
+	URL       string                 `json:"url"`
+	Title     string                 `json:"title"`
+	Data      map[string]interface{} `json:"data"`
+	Collector struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"collector"`
+}
+
+// ReceiverResponse represents the response to extension data
+type ReceiverResponse struct {
+	Success   bool      `json:"success"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// ReceiverHandler accepts data from Chrome extension
+func (h *APIHandlers) ReceiverHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload ExtensionDataPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to decode extension data")
+		response := ReceiverResponse{
+			Success:   false,
+			Message:   "Invalid payload format",
+			Error:     err.Error(),
+			Timestamp: time.Now(),
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	h.logger.Info().
+		Str("url", payload.URL).
+		Str("collector", payload.Collector.Name).
+		Str("version", payload.Collector.Version).
+		Msg("Received data from Chrome extension")
+
+	// Extract page type and process accordingly
+	pageType := "unknown"
+	if data, ok := payload.Data["pageType"].(string); ok {
+		pageType = data
+	}
+
+	h.logger.Debug().
+		Str("page_type", pageType).
+		Str("title", payload.Title).
+		Msg("Processing extension data")
+
+	// Store the received data
+	if err := h.storeExtensionData(payload); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to store extension data")
+		response := ReceiverResponse{
+			Success:   false,
+			Message:   "Failed to store data",
+			Error:     err.Error(),
+			Timestamp: time.Now(),
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	response := ReceiverResponse{
+		Success:   true,
+		Message:   fmt.Sprintf("Successfully received and stored %s page data", pageType),
+		Timestamp: time.Now(),
+	}
+
+	h.logger.Info().
+		Str("page_type", pageType).
+		Msg("Successfully processed extension data")
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// storeExtensionData stores data received from the extension
+func (h *APIHandlers) storeExtensionData(payload ExtensionDataPayload) error {
+	// TODO: Implement proper storage logic for extension data
+	// For now, just extract and store issue data if available
+
+	pageType := "unknown"
+	if pt, ok := payload.Data["pageType"].(string); ok {
+		pageType = pt
+	}
+
+	// If this is an issue page with structured data, store it
+	if pageType == "issue" {
+		if issueData, ok := payload.Data["issue"].(map[string]interface{}); ok {
+			if key, ok := issueData["key"].(string); ok {
+				// Extract project key from issue key (e.g., "PROJ-123" -> "PROJ")
+				projectKey := ""
+				for i, c := range key {
+					if c == '-' {
+						projectKey = key[:i]
+						break
+					}
+				}
+
+				if projectKey != "" {
+					// Load existing tickets for project
+					tickets, err := h.storage.LoadTickets(projectKey)
+					if err != nil {
+						// If project doesn't exist, create new map
+						tickets = make(map[string]*TicketData)
+					}
+
+					// Convert extension data to TicketData structure
+					ticket := &TicketData{
+						Key:     key,
+						Updated: payload.Timestamp,
+					}
+
+					if summary, ok := issueData["summary"].(string); ok {
+						ticket.Summary = summary
+					}
+					if description, ok := issueData["description"].(string); ok {
+						ticket.Description = description
+					}
+					if issueType, ok := issueData["issueType"].(string); ok {
+						ticket.IssueType = issueType
+					}
+					if status, ok := issueData["status"].(string); ok {
+						ticket.Status = status
+					}
+					if priority, ok := issueData["priority"].(string); ok {
+						ticket.Priority = priority
+					}
+
+					// Store the ticket
+					tickets[key] = ticket
+
+					// Save back to storage
+					if err := h.storage.SaveTickets(projectKey, tickets); err != nil {
+						return fmt.Errorf("failed to save ticket: %w", err)
+					}
+
+					h.logger.Info().
+						Str("ticket", key).
+						Str("project", projectKey).
+						Msg("Stored issue data from extension")
+				}
+			}
+		}
+	}
+
+	return nil
 }

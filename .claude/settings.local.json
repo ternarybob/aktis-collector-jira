@@ -28,7 +28,20 @@
       "Bash(find:*)",
       "Read(//c/development/aktis/aktis-collector/pages/**)",
       "Read(//c/development/aktis/aktis-collector/internal/services/**)",
-      "Read(//c/development/aktis/aktis-collector/internal/handlers/**)"
+      "Read(//c/development/aktis/aktis-collector/internal/handlers/**)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(go get:*)",
+      "Bash(./aktis-collector-jira.exe -help)",
+      "Bash(./aktis-collector-jira.exe -config test-config.toml -validate)",
+      "Bash(\".\\aktis-collector-jira.exe\" -config \"aktis-collector-jira.toml\")",
+      "Bash(git checkout:*)",
+      "Bash(./scripts/build.ps1)",
+      "Read(//c/development/aktis/aktis-collector/scripts/**)",
+      "Read(//c/Users/bobmc/Pictures/Screenshots 1/**)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []
