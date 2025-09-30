@@ -296,8 +296,8 @@ if (Test-Path $extensionSourcePath) {
         "manifest.json",
         "background.js",
         "content.js",
-        "popup.html",
-        "popup.js",
+        "sidepanel.html",
+        "sidepanel.js",
         "README.md"
     )
 
@@ -371,8 +371,3 @@ if ($Clean) {
 Write-Host "`nBuild completed successfully!" -ForegroundColor Green
 Write-Host "Server: $collectorOutputPath" -ForegroundColor Cyan
 Write-Host "Extension: $extensionDestPath" -ForegroundColor Cyan
-Write-Host "`nTo install extension:" -ForegroundColor Yellow
-Write-Host "  1. Open Chrome and go to chrome://extensions/" -ForegroundColor Gray
-Write-Host "  2. Enable 'Developer mode'" -ForegroundColor Gray
-Write-Host "  3. Click 'Load unpacked'" -ForegroundColor Gray
-Write-Host "  4. Select: $extensionDestPath" -ForegroundColor Gray

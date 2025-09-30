@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Aktis Jira Collector",
-  "version": "0.1.0",
+  "version": "0.1.119",
   "description": "Collects Jira page data and sends it to Aktis Collector server",
   "permissions": [
     "activeTab",
+    "tabs",
     "storage",
-    "scripting"
+    "scripting",
+    "sidePanel",
+    "webNavigation"
   ],
   "host_permissions": [
     "http://localhost/*",
@@ -27,12 +30,10 @@
     }
   ],
   "action": {
-    "default_popup": "popup.html",
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
-    }
+    "default_title": "Open Aktis Jira Collector"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "icons": {
     "16": "icons/icon16.png",

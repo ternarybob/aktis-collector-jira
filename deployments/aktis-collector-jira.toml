@@ -76,7 +76,7 @@ include_history = false
 [storage]
 # Database file location - defaults to {executable_location}/data/{exec_name}.db
 database_path = "./data/aktis-collector-jira.db"
-# Backup directory for database backups
-backup_dir = "./backups"
+# Backup directory for database backups (currently not used, extension-based collection doesn't use backups)
+backup_dir = ""
 # Data retention in days (0 = keep forever)
 retention_days = 90

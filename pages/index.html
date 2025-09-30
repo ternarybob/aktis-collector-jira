@@ -279,10 +279,11 @@
         }
 
         /* Larger content areas for Storage and Config tabs */
-        #storage-content,
+        #projects-content,
+        #tickets-content,
         #config-content {
-            min-height: 70vh;
-            max-height: 70vh;
+            min-height: 40vh;
+            max-height: 40vh;
         }
 
         /* Highlight.js overrides for our theme */
@@ -607,7 +608,7 @@
         <div class="navbar-menu">
             <a href="#overview" class="navbar-link active" onclick="showTab('overview', event)">Overview</a>
             <a href="#storage" class="navbar-link" onclick="showTab('storage', event)">Storage</a>
-            <a href="#config" class="navbar-link" onclick="showTab('config', event)">Configuration</a>
+            <a href="#settings" class="navbar-link" onclick="showTab('settings', event)">Settings</a>
         </div>
         <div class="navbar-status">
             <div class="status-indicator"></div>
@@ -658,30 +659,36 @@
         <!-- Storage Tab -->
         <div id="storage" class="tab-content">
             <div class="dashboard-grid">
+                <!-- Projects Section -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">Database Contents</div>
-                        <div style="display: flex; gap: 10px;">
-                            <button class="refresh-btn" hx-get="/database/data" hx-target="#storage-content">
-                                Refresh Data
-                            </button>
-                            <button class="refresh-btn clear-btn" style="background: #ff4444; border-color: #ff4444;"
-                                    hx-delete="/database/data"
-                                    hx-target="#storage-content"
-                                    hx-confirm="Are you sure you want to clear all stored tickets? This cannot be undone.">
-                                Clear Database
-                            </button>
-                        </div>
+                        <div class="card-title">Projects</div>
+                        <button class="refresh-btn" hx-get="/projects" hx-target="#projects-content">
+                            Refresh
+                        </button>
                     </div>
-                    <div id="storage-content" class="content-area" hx-get="/database/data" hx-trigger="load">
-                        <div class="loading htmx-indicator">Loading database contents...</div>
+                    <div id="projects-content" class="content-area" hx-get="/projects" hx-trigger="load, refresh">
+                        <div class="loading htmx-indicator">Loading projects...</div>
+                    </div>
+                </div>
+
+                <!-- Tickets Section -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">Tickets</div>
+                        <button class="refresh-btn" hx-get="/database/data" hx-target="#tickets-content">
+                            Refresh
+                        </button>
+                    </div>
+                    <div id="tickets-content" class="content-area" hx-get="/database/data" hx-trigger="load, refresh">
+                        <div class="loading htmx-indicator">Loading tickets...</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Configuration Tab -->
-        <div id="config" class="tab-content">
+        <!-- Settings Tab -->
+        <div id="settings" class="tab-content">
             <div class="dashboard-grid">
                 <div class="card">
                     <div class="card-header">
@@ -692,6 +699,30 @@
                     </div>
                     <div id="config-content" class="content-area" hx-get="/config" hx-trigger="load">
                         <div class="loading htmx-indicator">Loading configuration...</div>
+                    </div>
+                </div>
+
+                <!-- Danger Zone -->
+                <div class="card" style="border-color: #ff4444;">
+                    <div class="card-header">
+                        <div class="card-title" style="color: #ff4444;">Danger Zone</div>
+                    </div>
+                    <div style="padding: 20px;">
+                        <p style="margin-bottom: 15px; color: #6a6a6a; font-size: 13px;">
+                            Permanently delete all stored data including projects and tickets. This action cannot be undone.
+                        </p>
+                        <button class="refresh-btn" style="background: #ff4444; border-color: #ff4444;"
+                                hx-delete="/database"
+                                hx-target="#clear-result"
+                                hx-swap="innerHTML"
+                                hx-on::after-request="
+                                    htmx.trigger('#projects-content', 'refresh');
+                                    htmx.trigger('#tickets-content', 'refresh');
+                                "
+                                hx-confirm="Are you sure you want to clear all stored data (projects and tickets)? This cannot be undone.">
+                            Clear All Data
+                        </button>
+                        <div id="clear-result" class="content-area" style="margin-top: 15px; min-height: 60px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 15px; font-family: 'Courier New', monospace; font-size: 13px; color: #333;"></div>
                     </div>
                 </div>
             </div>
@@ -739,12 +770,20 @@
                 document.querySelector(`.navbar-link[href="#${tabName}"]`).classList.add('active');
             }
 
+            // Clear the clear-result box when navigating away from settings
+            if (tabName !== 'settings') {
+                const clearResult = document.getElementById('clear-result');
+                if (clearResult) {
+                    clearResult.innerHTML = '';
+                }
+            }
+
             window.location.hash = tabName;
         }
 
         function handleHashChange() {
             const hash = window.location.hash.slice(1);
-            const validTabs = ['overview', 'storage', 'config'];
+            const validTabs = ['overview', 'storage', 'settings'];
             const tabName = validTabs.includes(hash) ? hash : 'overview';
             showTab(tabName);
         }

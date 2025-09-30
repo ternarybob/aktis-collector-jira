@@ -17,7 +17,6 @@ import (
 // webServer provides HTTP endpoints for monitoring and status
 type webServer struct {
 	config      *Config
-	collector   Collector
 	storage     Storage
 	server      *http.Server
 	logger      arbor.ILogger
@@ -28,11 +27,14 @@ type webServer struct {
 }
 
 // NewWebServer creates a new web server instance
-func NewWebServer(cfg *Config, collector Collector, storage Storage, logger arbor.ILogger) (WebService, error) {
+func NewWebServer(cfg *Config, storage Storage, logger arbor.ILogger) (WebService, error) {
 	mux := http.NewServeMux()
 
-	// Create API handlers
-	apiHandlers := handlers.NewAPIHandlers(cfg, collector, storage, logger)
+	// Create page assessor service
+	assessor := NewPageAssessor(logger)
+
+	// Create API handlers with assessor
+	apiHandlers := handlers.NewAPIHandlers(cfg, storage, logger, assessor)
 
 	// Find pages directory - check both relative to working dir and binary location
 	pagesDir := "pages"
@@ -52,7 +54,6 @@ func NewWebServer(cfg *Config, collector Collector, storage Storage, logger arbo
 
 	ws := &webServer{
 		config:      cfg,
-		collector:   collector,
 		storage:     storage,
 		logger:      logger,
 		apiHandlers: apiHandlers,
@@ -66,9 +67,10 @@ func NewWebServer(cfg *Config, collector Collector, storage Storage, logger arbo
 	// Register API endpoints with logging middleware
 	mux.HandleFunc("/health", ws.loggingMiddleware(apiHandlers.HealthHandler))
 	mux.HandleFunc("/status", ws.loggingMiddleware(apiHandlers.StatusHandler))
+	mux.HandleFunc("/projects", ws.loggingMiddleware(apiHandlers.ProjectsHandler))
 	mux.HandleFunc("/database", ws.loggingMiddleware(apiHandlers.DatabaseHandler))
 	mux.HandleFunc("/config", ws.loggingMiddleware(apiHandlers.ConfigHandler))
-	mux.HandleFunc("/collect", ws.loggingMiddleware(apiHandlers.CollectHandler))
+	mux.HandleFunc("/assess", ws.loggingMiddleware(apiHandlers.AssessHandler))
 	mux.HandleFunc("/receiver", ws.loggingMiddleware(apiHandlers.ReceiverHandler))
 
 	// Register UI endpoints if available
@@ -112,6 +114,17 @@ func (ws *webServer) IsRunning() bool {
 
 func (ws *webServer) loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Add CORS headers for Chrome extension
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		// Handle preflight OPTIONS request
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		start := time.Now()
 
 		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}

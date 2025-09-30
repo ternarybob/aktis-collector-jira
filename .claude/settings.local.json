@@ -41,7 +41,14 @@
       "Read(//c/Users/bobmc/Pictures/Screenshots 1/**)",
       "Bash(netstat:*)",
       "Bash(findstr:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(./aktis-collector-jira.exe)",
+      "Bash(Select-String -Pattern \"error|Error|ERROR|Build|Version|SUCCESS\" -Context 0,1)",
+      "Bash(taskkill:*)",
+      "Bash(md5sum:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []

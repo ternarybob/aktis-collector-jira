@@ -1,247 +1,180 @@
 // Content script for Aktis Jira Collector
-// Runs on Jira pages to extract ticket data
+// Runs on Jira pages - provides helper functions for data collection
 
 console.log('Aktis Jira Collector content script loaded');
-
-// Listen for messages from background script or popup
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === 'COLLECT_PAGE') {
-    collectCurrentPage()
-      .then(data => sendResponse({ success: true, data }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
-    return true; // Keep channel open for async
-  }
-});
-
-// Auto-collect on page load if enabled
-chrome.runtime.sendMessage({ type: 'GET_CONFIG' }, (response) => {
-  if (response.config && response.config.autoCollect) {
-    // Wait for page to be fully loaded
-    if (document.readyState === 'complete') {
-      collectCurrentPage();
-    } else {
-      window.addEventListener('load', () => collectCurrentPage());
-    }
-  }
-});
-
-// Collect data from current page
-async function collectCurrentPage() {
-  console.log('Collecting page data...');
-
-  const pageType = detectPageType();
-  console.log('Page type detected:', pageType);
-
-  let pageData = {
-    pageType: pageType,
-    url: window.location.href,
-    timestamp: new Date().toISOString(),
-    html: document.documentElement.outerHTML
-  };
-
-  // Collect structured data based on page type
-  if (pageType === 'issue') {
-    pageData.issue = extractIssueData();
-  } else if (pageType === 'board') {
-    pageData.board = extractBoardData();
-  } else if (pageType === 'search') {
-    pageData.search = extractSearchResults();
-  }
-
-  // Send to background script
-  const response = await chrome.runtime.sendMessage({
-    type: 'PAGE_DATA',
-    data: pageData
-  });
-
-  console.log('Data sent to background:', response);
-
-  // Show notification
-  showNotification('Page data collected', pageType);
-
-  return pageData;
-}
 
 // Detect what type of Jira page we're on
 function detectPageType() {
   const url = window.location.href;
   const path = window.location.pathname;
 
+  // Check for Projects List page
+  // Example: https://company.atlassian.net/jira/projects?page=1
+  if ((url.includes('/jira/projects') || path === '/jira/projects') && !url.includes('/projects/')) {
+    return 'projectsList';
+  }
+
+  // Check for Jira Cloud issue detail page (new format)
   if (url.includes('/browse/') || path.includes('/browse/')) {
     return 'issue';
   }
+
+  // Check for Jira board/sprint pages
   if (url.includes('/board/') || path.includes('/secure/RapidBoard')) {
     return 'board';
   }
-  if (url.includes('/issues/') || url.includes('/jira/software/c/projects')) {
+
+  // Check for Jira Cloud project issue list (new format)
+  // Example: https://company.atlassian.net/jira/software/c/projects/TEST435/issues
+  if (url.includes('/jira/software/c/projects/') && url.includes('/issues')) {
+    return 'issueList';
+  }
+
+  // Check for Jira issue search/filter pages
+  if (url.includes('/issues/') || url.includes('?jql=')) {
     return 'search';
   }
+
+  // Check for project overview pages
   if (url.includes('/projects/')) {
     return 'project';
+  }
+
+  // Check if we're on any Atlassian Jira domain
+  if (url.includes('.atlassian.net') || url.includes('/jira/')) {
+    return 'generic';
   }
 
   return 'unknown';
 }
 
-// Extract data from issue page
-function extractIssueData() {
-  const data = {
-    key: null,
-    summary: null,
-    description: null,
-    issueType: null,
-    status: null,
-    priority: null,
-    assignee: null,
-    reporter: null,
-    created: null,
-    updated: null,
-    labels: [],
-    components: [],
-    customFields: {}
-  };
+// Extract Jira issue links from current page for auto-navigation
+function extractJiraLinks() {
+  const links = [];
+  const seen = new Set();
 
-  // Try to extract issue key from URL or page
-  const urlMatch = window.location.href.match(/\/browse\/([A-Z]+-\d+)/);
-  if (urlMatch) {
-    data.key = urlMatch[1];
-  }
+  // Find all links that point to Jira issues
+  const linkElements = document.querySelectorAll('a[href*="/browse/"], a[href*="/issues/"]');
 
-  // Try different selectors for different Jira versions
-  // Summary
-  const summarySelectors = [
-    '[data-test-id="issue.views.field.rich-text.summary"]',
-    '[data-testid="issue.views.issue-base.foundation.summary.heading"]',
-    '#summary-val',
-    'h1[data-test-id*="summary"]',
-    'h1.summary'
-  ];
-  for (const selector of summarySelectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      data.summary = element.textContent.trim();
-      break;
+  linkElements.forEach(link => {
+    const href = link.href;
+
+    // Extract issue key if present
+    const issueMatch = href.match(/\/browse\/([A-Z]+-\d+)/);
+    if (issueMatch && !seen.has(href)) {
+      seen.add(href);
+      links.push({
+        url: href,
+        issueKey: issueMatch[1],
+        text: link.textContent.trim().substring(0, 100) // Limit text length
+      });
     }
-  }
+  });
 
-  // Description
-  const descSelectors = [
-    '[data-test-id="issue.views.field.rich-text.description"]',
-    '#description-val',
-    '.description'
-  ];
-  for (const selector of descSelectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      data.description = element.textContent.trim();
-      break;
-    }
-  }
-
-  // Issue Type
-  const typeSelectors = [
-    '[data-test-id="issue.views.field.issue-type.common.ui.read-view.value"]',
-    '#type-val',
-    '[data-testid*="issue-type"]'
-  ];
-  for (const selector of typeSelectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      data.issueType = element.textContent.trim();
-      break;
-    }
-  }
-
-  // Status
-  const statusSelectors = [
-    '[data-test-id="issue.views.field.status.common.ui.read-view.status-button"]',
-    '#status-val span',
-    '[data-testid*="status"]'
-  ];
-  for (const selector of statusSelectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      data.status = element.textContent.trim();
-      break;
-    }
-  }
-
-  // Priority
-  const prioritySelectors = [
-    '[data-test-id="issue.views.field.priority.common.ui.read-view.priority"]',
-    '#priority-val',
-    '[data-testid*="priority"]'
-  ];
-  for (const selector of prioritySelectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      data.priority = element.textContent.trim();
-      break;
-    }
-  }
-
-  // Labels
-  const labelElements = document.querySelectorAll('[data-test-id*="label"], .labels a, #wrap-labels a');
-  data.labels = Array.from(labelElements).map(el => el.textContent.trim()).filter(Boolean);
-
-  // Components
-  const componentElements = document.querySelectorAll('[data-test-id*="component"], #components-val a');
-  data.components = Array.from(componentElements).map(el => el.textContent.trim()).filter(Boolean);
-
-  return data;
+  console.log(`Found ${links.length} Jira links on page`);
+  return links;
 }
 
-// Extract data from board/backlog page
-function extractBoardData() {
-  const data = {
-    boardName: null,
-    columns: [],
-    issues: []
-  };
+// Extract ticket data directly from visible DOM elements
+function extractTicketsFromDOM() {
+  const tickets = [];
 
-  // Board name
-  const boardNameElement = document.querySelector('[data-test-id="navigation-apps.ui.board-name"]');
-  if (boardNameElement) {
-    data.boardName = boardNameElement.textContent.trim();
+  // Try to find issue rows - Jira uses various selectors
+  const rowSelectors = [
+    '[data-issue-key]',  // Standard attribute
+    '[data-testid*="issue"]',  // Test IDs
+    'tr[id^="row-"]',  // Row IDs
+    '.issue-row',  // Class names
+  ];
+
+  let rows = [];
+  for (const selector of rowSelectors) {
+    rows = document.querySelectorAll(selector);
+    if (rows.length > 0) {
+      console.log(`Found ${rows.length} rows using selector: ${selector}`);
+      break;
+    }
   }
 
-  // Extract visible issues from board
-  const issueCards = document.querySelectorAll('[data-testid*="issue"], .ghx-issue');
-  data.issues = Array.from(issueCards).map(card => {
-    const key = card.querySelector('[data-testid*="issue-key"], .ghx-key')?.textContent.trim();
-    const summary = card.querySelector('[data-testid*="summary"], .ghx-summary')?.textContent.trim();
-    return { key, summary };
-  }).filter(issue => issue.key);
+  rows.forEach(row => {
+    const ticket = {};
 
-  return data;
-}
-
-// Extract search results
-function extractSearchResults() {
-  const data = {
-    query: null,
-    count: 0,
-    issues: []
-  };
-
-  // Try to get search query
-  const searchInput = document.querySelector('input[name="jql"], [data-test-id*="search"]');
-  if (searchInput) {
-    data.query = searchInput.value;
-  }
-
-  // Extract issue list
-  const issueRows = document.querySelectorAll('[data-testid*="issue-row"], .issue-list tr[data-issue-key]');
-  data.issues = Array.from(issueRows).map(row => {
+    // Extract issue key
     const key = row.getAttribute('data-issue-key') ||
-                row.querySelector('[data-testid*="issue-key"]')?.textContent.trim();
-    const summary = row.querySelector('[data-testid*="summary"], .summary')?.textContent.trim();
-    return { key, summary };
-  }).filter(issue => issue.key);
+                row.getAttribute('data-key') ||
+                extractKeyFromElement(row);
 
-  data.count = data.issues.length;
+    if (!key) return; // Skip if no key found
 
-  return data;
+    ticket.key = key;
+    ticket.url = `${window.location.origin}/browse/${key}`;
+
+    // Extract project_id from key
+    const projectMatch = key.match(/^([A-Z]+)-\d+$/);
+    if (projectMatch) {
+      ticket.project_id = projectMatch[1];
+    }
+
+    // Extract summary - usually in a link or span
+    const summaryEl = row.querySelector('[data-testid*="summary"]') ||
+                      row.querySelector('a[href*="/browse/"]') ||
+                      row.querySelector('.summary');
+    if (summaryEl) {
+      ticket.summary = summaryEl.textContent.trim().replace(key, '').trim();
+    }
+
+    // Extract status - usually in a badge/lozenge
+    const statusEl = row.querySelector('[data-testid*="status"]') ||
+                     row.querySelector('.status-badge') ||
+                     row.querySelector('[class*="lozenge"]');
+    if (statusEl) {
+      ticket.status = statusEl.textContent.trim();
+    }
+
+    // Extract priority
+    const priorityEl = row.querySelector('[aria-label*="riority"]') ||
+                       row.querySelector('[title*="riority"]') ||
+                       row.querySelector('.priority');
+    if (priorityEl) {
+      const priorityText = priorityEl.getAttribute('aria-label') ||
+                          priorityEl.getAttribute('title') ||
+                          priorityEl.textContent.trim();
+      ticket.priority = priorityText.replace('Priority:', '').trim();
+    }
+
+    // Extract issue type
+    const typeEl = row.querySelector('[aria-label*="Issue Type"]') ||
+                   row.querySelector('[data-testid*="type"]') ||
+                   row.querySelector('.issuetype');
+    if (typeEl) {
+      const typeText = typeEl.getAttribute('aria-label') ||
+                      typeEl.getAttribute('title') ||
+                      typeEl.textContent.trim();
+      ticket.issue_type = typeText.replace('Issue Type:', '').trim();
+    }
+
+    // Extract assignee
+    const assigneeEl = row.querySelector('[data-testid*="assignee"]') ||
+                       row.querySelector('[aria-label*="ssignee"]') ||
+                       row.querySelector('.assignee');
+    if (assigneeEl) {
+      const assigneeText = assigneeEl.getAttribute('aria-label') ||
+                          assigneeEl.getAttribute('title') ||
+                          assigneeEl.textContent.trim();
+      ticket.assignee = assigneeText.replace('Assignee:', '').trim();
+    }
+
+    tickets.push(ticket);
+  });
+
+  return tickets;
+}
+
+// Helper function to extract issue key from element text
+function extractKeyFromElement(element) {
+  const text = element.textContent;
+  const keyMatch = text.match(/\b([A-Z]+-\d+)\b/);
+  return keyMatch ? keyMatch[1] : null;
 }
 
 // Show in-page notification

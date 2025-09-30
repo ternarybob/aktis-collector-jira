@@ -17,6 +17,7 @@ const (
 	ticketsBucket   = "tickets"
 	metadataBucket  = "metadata"
 	processedBucket = "processed"
+	projectsBucket  = "projects"
 	lastUpdateKey   = "last_update"
 	sendCountKey    = "send_count"
 	refreshCountKey = "refresh_count"
@@ -54,6 +55,9 @@ func NewStorage(config *StorageConfig) (Storage, error) {
 			return err
 		}
 		if _, err := tx.CreateBucketIfNotExists([]byte(processedBucket)); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists([]byte(projectsBucket)); err != nil {
 			return err
 		}
 		return nil
@@ -151,6 +155,45 @@ func (s *storage) LoadAllTickets() (map[string]*TicketData, error) {
 	return tickets, err
 }
 
+func (s *storage) ClearAllTickets() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		// Delete and recreate the tickets bucket to clear all data
+		if err := tx.DeleteBucket([]byte(ticketsBucket)); err != nil {
+			return fmt.Errorf("failed to delete tickets bucket: %w", err)
+		}
+
+		if _, err := tx.CreateBucket([]byte(ticketsBucket)); err != nil {
+			return fmt.Errorf("failed to recreate tickets bucket: %w", err)
+		}
+
+		// Also clear metadata
+		if err := tx.DeleteBucket([]byte(metadataBucket)); err != nil {
+			return fmt.Errorf("failed to delete metadata bucket: %w", err)
+		}
+
+		if _, err := tx.CreateBucket([]byte(metadataBucket)); err != nil {
+			return fmt.Errorf("failed to recreate metadata bucket: %w", err)
+		}
+
+		return nil
+	})
+}
+
+func (s *storage) ClearAllProjects() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		// Delete and recreate the projects bucket to clear all data
+		if err := tx.DeleteBucket([]byte(projectsBucket)); err != nil {
+			return fmt.Errorf("failed to delete projects bucket: %w", err)
+		}
+
+		if _, err := tx.CreateBucket([]byte(projectsBucket)); err != nil {
+			return fmt.Errorf("failed to recreate projects bucket: %w", err)
+		}
+
+		return nil
+	})
+}
+
 func (s *storage) GetLastUpdate(projectKey string) (string, error) {
 	var lastUpdate time.Time
 
@@ -175,4 +218,44 @@ func (s *storage) GetLastUpdate(projectKey string) (string, error) {
 	}
 
 	return lastUpdate.Format("2006-01-02 15:04"), nil
+}
+
+func (s *storage) SaveProjects(projects []*ProjectData) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(projectsBucket))
+
+		for _, project := range projects {
+			data, err := json.Marshal(project)
+			if err != nil {
+				return fmt.Errorf("failed to marshal project %s: %w", project.Key, err)
+			}
+
+			if err := bucket.Put([]byte(project.Key), data); err != nil {
+				return fmt.Errorf("failed to save project %s: %w", project.Key, err)
+			}
+		}
+
+		return nil
+	})
+}
+
+func (s *storage) LoadProjects() ([]*ProjectData, error) {
+	var projects []*ProjectData
+
+	err := s.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(projectsBucket))
+
+		c := bucket.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var project ProjectData
+			if err := json.Unmarshal(v, &project); err != nil {
+				continue
+			}
+			projects = append(projects, &project)
+		}
+
+		return nil
+	})
+
+	return projects, err
 }
