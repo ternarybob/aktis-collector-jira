@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
-	. "aktis-collector-jira/internal/common"
-	. "aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/common"
+	"aktis-collector-jira/internal/interfaces"
+	"aktis-collector-jira/internal/models"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -25,19 +26,13 @@ const (
 
 type storage struct {
 	db     *bolt.DB
-	config *StorageConfig
+	config *common.StorageConfig
 }
 
-func NewStorage(config *StorageConfig) (Storage, error) {
+func NewStorage(config *common.StorageConfig) (interfaces.Storage, error) {
 	dbDir := filepath.Dir(config.DatabasePath)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
-	}
-
-	if config.BackupDir != "" {
-		if err := os.MkdirAll(config.BackupDir, 0755); err != nil {
-			return nil, fmt.Errorf("failed to create backup directory: %w", err)
-		}
 	}
 
 	db, err := bolt.Open(config.DatabasePath, 0600, &bolt.Options{
@@ -80,7 +75,7 @@ func (s *storage) Close() error {
 	return nil
 }
 
-func (s *storage) SaveTickets(projectKey string, tickets map[string]*TicketData) error {
+func (s *storage) SaveTickets(projectKey string, tickets map[string]*models.TicketData) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(ticketsBucket))
 		now := time.Now()
@@ -112,8 +107,8 @@ func (s *storage) SaveTickets(projectKey string, tickets map[string]*TicketData)
 	})
 }
 
-func (s *storage) LoadTickets(projectKey string) (map[string]*TicketData, error) {
-	tickets := make(map[string]*TicketData)
+func (s *storage) LoadTickets(projectKey string) (map[string]*models.TicketData, error) {
+	tickets := make(map[string]*models.TicketData)
 
 	err := s.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(ticketsBucket))
@@ -121,7 +116,7 @@ func (s *storage) LoadTickets(projectKey string) (map[string]*TicketData, error)
 
 		c := bucket.Cursor()
 		for k, v := c.Seek(prefix); k != nil && len(k) >= len(prefix) && string(k[:len(prefix)]) == string(prefix); k, v = c.Next() {
-			var ticket TicketData
+			var ticket models.TicketData
 			if err := json.Unmarshal(v, &ticket); err != nil {
 				continue
 			}
@@ -134,15 +129,15 @@ func (s *storage) LoadTickets(projectKey string) (map[string]*TicketData, error)
 	return tickets, err
 }
 
-func (s *storage) LoadAllTickets() (map[string]*TicketData, error) {
-	tickets := make(map[string]*TicketData)
+func (s *storage) LoadAllTickets() (map[string]*models.TicketData, error) {
+	tickets := make(map[string]*models.TicketData)
 
 	err := s.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(ticketsBucket))
 
 		c := bucket.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			var ticket TicketData
+			var ticket models.TicketData
 			if err := json.Unmarshal(v, &ticket); err != nil {
 				continue
 			}
@@ -220,7 +215,7 @@ func (s *storage) GetLastUpdate(projectKey string) (string, error) {
 	return lastUpdate.Format("2006-01-02 15:04"), nil
 }
 
-func (s *storage) SaveProjects(projects []*ProjectData) error {
+func (s *storage) SaveProjects(projects []*models.ProjectData) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(projectsBucket))
 
@@ -239,15 +234,15 @@ func (s *storage) SaveProjects(projects []*ProjectData) error {
 	})
 }
 
-func (s *storage) LoadProjects() ([]*ProjectData, error) {
-	var projects []*ProjectData
+func (s *storage) LoadProjects() ([]*models.ProjectData, error) {
+	var projects []*models.ProjectData
 
 	err := s.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(projectsBucket))
 
 		c := bucket.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			var project ProjectData
+			var project models.ProjectData
 			if err := json.Unmarshal(v, &project); err != nil {
 				continue
 			}
