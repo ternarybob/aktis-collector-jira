@@ -53,7 +53,15 @@
       "Read(//c/development/ternarybob/atlassian-test-data-populator/scripts/**)",
       "Bash(Sort-Object LastWriteTime -Descending)",
       "Bash(Select-Object -First 1)",
-      "Bash(Select-Object -ExpandProperty Name)"
+      "Bash(Select-Object -ExpandProperty Name)",
+      "Bash(go run:*)",
+      "Bash(timeout 180 go run integration.go)",
+      "Read(//c/development/aktis/**)",
+      "Bash(start powershell:*)",
+      "Bash(Select-Object Name)",
+      "Bash(Get-Content \"c:\\development\\aktis\\aktis-collector-jira\\bin\\logs\\aktis-collector-jira.log\")",
+      "Bash(Select-Object -Last 50)",
+      "Bash(timeout:*)"
     ],
     "deny": [],
     "ask": []

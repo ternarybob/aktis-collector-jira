@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aktis Jira Collector",
-  "version": "0.1.162",
+  "version": "0.1.164",
   "description": "Collects Jira page data and sends it to Aktis Collector server",
   "permissions": [
     "activeTab",
