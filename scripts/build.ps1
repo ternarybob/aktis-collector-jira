@@ -9,7 +9,7 @@ param (
     [switch]$Test,
     [switch]$Verbose,
     [switch]$Release,
-    [switch]$Docker
+    [switch]$Run
 )
 
 <#
@@ -38,8 +38,8 @@ param (
 .PARAMETER Release
     Build optimized release binary
 
-.PARAMETER Docker
-    Build for Docker deployment (skip stopping local process)
+.PARAMETER Run
+    Run the application in a new terminal after successful build
 
 .EXAMPLE
     .\build.ps1
@@ -52,6 +52,10 @@ param (
 .EXAMPLE
     .\build.ps1 -Environment prod -Version "1.0.0"
     Build for production with specific version
+
+.EXAMPLE
+    .\build.ps1 -Run
+    Build and run the application in a new terminal
 #>
 
 # Error handling
@@ -89,23 +93,25 @@ $buildTimestamp = Get-Date -Format "MM-dd-HH-mm-ss"
 if (-not (Test-Path $versionFilePath)) {
     # Create .version file if it doesn't exist
     $versionContent = @"
-version: 0.1.0
-build: $buildTimestamp
+server_version: 0.1.0
+server_build: $buildTimestamp
+extension_version: 0.1.0
 "@
     Set-Content -Path $versionFilePath -Value $versionContent
     Write-Host "Created .version file with version 0.1.0" -ForegroundColor Green
 } else {
-    # Read current version and increment patch version
+    # Read current version and increment patch versions
     $versionLines = Get-Content $versionFilePath
-    $currentVersion = ""
+    $currentServerVersion = ""
+    $currentExtVersion = ""
     $updatedLines = @()
 
     foreach ($line in $versionLines) {
-        if ($line -match '^version:\s*(.+)$') {
-            $currentVersion = $matches[1].Trim()
+        if ($line -match '^server_version:\s*(.+)$') {
+            $currentServerVersion = $matches[1].Trim()
 
             # Parse version (format: major.minor.patch)
-            if ($currentVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
+            if ($currentServerVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
                 $major = [int]$matches[1]
                 $minor = [int]$matches[2]
                 $patch = [int]$matches[3]
@@ -114,15 +120,33 @@ build: $buildTimestamp
                 $patch++
                 $newVersion = "$major.$minor.$patch"
 
-                $updatedLines += "version: $newVersion"
-                Write-Host "Incremented version: $currentVersion -> $newVersion" -ForegroundColor Green
+                $updatedLines += "server_version: $newVersion"
+                Write-Host "Incremented server version: $currentServerVersion -> $newVersion" -ForegroundColor Green
             } else {
-                # Version format not recognized, keep as-is
                 $updatedLines += $line
-                Write-Host "Version format not recognized, keeping: $currentVersion" -ForegroundColor Yellow
+                Write-Host "Server version format not recognized, keeping: $currentServerVersion" -ForegroundColor Yellow
             }
-        } elseif ($line -match '^build:\s*') {
-            $updatedLines += "build: $buildTimestamp"
+        } elseif ($line -match '^server_build:\s*') {
+            $updatedLines += "server_build: $buildTimestamp"
+        } elseif ($line -match '^extension_version:\s*(.+)$') {
+            $currentExtVersion = $matches[1].Trim()
+
+            # Parse version (format: major.minor.patch)
+            if ($currentExtVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
+                $major = [int]$matches[1]
+                $minor = [int]$matches[2]
+                $patch = [int]$matches[3]
+
+                # Increment patch version
+                $patch++
+                $newExtVersion = "$major.$minor.$patch"
+
+                $updatedLines += "extension_version: $newExtVersion"
+                Write-Host "Incremented extension version: $currentExtVersion -> $newExtVersion" -ForegroundColor Green
+            } else {
+                $updatedLines += $line
+                Write-Host "Extension version format not recognized, keeping: $currentExtVersion" -ForegroundColor Yellow
+            }
         } else {
             $updatedLines += $line
         }
@@ -136,15 +160,19 @@ build: $buildTimestamp
 $versionInfo = @{}
 $versionLines = Get-Content $versionFilePath
 foreach ($line in $versionLines) {
-    if ($line -match '^version:\s*(.+)$') {
-        $versionInfo.Version = $matches[1].Trim()
+    if ($line -match '^server_version:\s*(.+)$') {
+        $versionInfo.ServerVersion = $matches[1].Trim()
     }
-    if ($line -match '^build:\s*(.+)$') {
-        $versionInfo.Build = $matches[1].Trim()
+    if ($line -match '^server_build:\s*(.+)$') {
+        $versionInfo.ServerBuild = $matches[1].Trim()
+    }
+    if ($line -match '^extension_version:\s*(.+)$') {
+        $versionInfo.ExtensionVersion = $matches[1].Trim()
     }
 }
 
-Write-Host "Using version: $($versionInfo.Version), build: $($versionInfo.Build)" -ForegroundColor Cyan
+Write-Host "Using server version: $($versionInfo.ServerVersion), build: $($versionInfo.ServerBuild)" -ForegroundColor Cyan
+Write-Host "Using extension version: $($versionInfo.ExtensionVersion)" -ForegroundColor Cyan
 
 # Clean build artifacts if requested
 if ($Clean) {
@@ -173,29 +201,32 @@ if ($Test) {
     Write-Host "Tests passed!" -ForegroundColor Green
 }
 
-# Stop executing process if it's running (skip for Docker builds)
-if (-not $Docker) {
-    try {
-        $processName = "aktis-collector-jira"
-        $process = Get-Process -Name $processName -ErrorAction SilentlyContinue
+# Stop executing process if it's running
+try {
+    $processName = "aktis-collector-jira"
+    $process = Get-Process -Name $processName -ErrorAction SilentlyContinue
 
-        if ($process) {
-            Write-Host "Stopping existing Aktis Collector Jira process..." -ForegroundColor Yellow
-            Stop-Process -Name $processName -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 1  # Give process time to fully terminate
-            Write-Host "Process stopped successfully" -ForegroundColor Green
-        } else {
-            Write-Host "No Aktis Collector Jira process found running" -ForegroundColor Gray
-        }
+    if ($process) {
+        Write-Host "Stopping existing Aktis Collector Jira process..." -ForegroundColor Yellow
+        Stop-Process -Name $processName -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1  # Give process time to fully terminate
+        Write-Host "Process stopped successfully" -ForegroundColor Green
+    } else {
+        Write-Host "No Aktis Collector Jira process found running" -ForegroundColor Gray
     }
-    catch {
-        Write-Warning "Could not stop Aktis Collector Jira process: $($_.Exception.Message)"
-    }
-} else {
-    Write-Host "Docker build - skipping local process check" -ForegroundColor Cyan
+}
+catch {
+    Write-Warning "Could not stop Aktis Collector Jira process: $($_.Exception.Message)"
 }
 
-# Download dependencies
+# Tidy and download dependencies
+Write-Host "Tidying dependencies..." -ForegroundColor Yellow
+go mod tidy
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Failed to tidy dependencies!" -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "Downloading dependencies..." -ForegroundColor Yellow
 go mod download
 if ($LASTEXITCODE -ne 0) {
@@ -206,8 +237,8 @@ if ($LASTEXITCODE -ne 0) {
 # Build flags
 $module = "aktis-collector-jira/internal/common"
 $buildFlags = @(
-    "-X", "$module.Version=$($versionInfo.Version)",
-    "-X", "$module.Build=$($versionInfo.Build)",
+    "-X", "$module.Version=$($versionInfo.ServerVersion)",
+    "-X", "$module.Build=$($versionInfo.ServerBuild)",
     "-X", "$module.GitCommit=$gitCommit"
 )
 
@@ -285,6 +316,15 @@ $extensionDestPath = Join-Path -Path $binDir -ChildPath "aktis-chrome-extension"
 
 # Check if extension source exists
 if (Test-Path $extensionSourcePath) {
+    # Update manifest.json with extension version
+    $manifestPath = Join-Path -Path $extensionSourcePath -ChildPath "manifest.json"
+    if (Test-Path $manifestPath) {
+        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        $manifest.version = $versionInfo.ExtensionVersion
+        $manifest | ConvertTo-Json -Depth 10 | Set-Content $manifestPath
+        Write-Host "Updated manifest.json to version $($versionInfo.ExtensionVersion)" -ForegroundColor Green
+    }
+
     # Create extension directory in bin
     if (Test-Path $extensionDestPath) {
         Remove-Item -Path $extensionDestPath -Recurse -Force
@@ -354,8 +394,9 @@ $fileSizeMB = [math]::Round($fileInfo.Length / 1MB, 2)
 Write-Host "`n==== Build Summary ====" -ForegroundColor Cyan
 Write-Host "Status: SUCCESS" -ForegroundColor Green
 Write-Host "Environment: $Environment" -ForegroundColor Green
-Write-Host "Version: $($versionInfo.Version)" -ForegroundColor Green
-Write-Host "Build: $($versionInfo.Build)" -ForegroundColor Green
+Write-Host "Server Version: $($versionInfo.ServerVersion)" -ForegroundColor Green
+Write-Host "Server Build: $($versionInfo.ServerBuild)" -ForegroundColor Green
+Write-Host "Extension Version: $($versionInfo.ExtensionVersion)" -ForegroundColor Green
 Write-Host "Collector Output: $collectorOutputPath ($fileSizeMB MB)" -ForegroundColor Green
 Write-Host "Extension Output: $extensionDestPath" -ForegroundColor Green
 Write-Host "Build Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
@@ -371,3 +412,25 @@ if ($Clean) {
 Write-Host "`nBuild completed successfully!" -ForegroundColor Green
 Write-Host "Server: $collectorOutputPath" -ForegroundColor Cyan
 Write-Host "Extension: $extensionDestPath" -ForegroundColor Cyan
+
+# Run application if -Run flag is set
+if ($Run) {
+    Write-Host "`n==== Starting Application ====" -ForegroundColor Yellow
+
+    # Use absolute paths for execution
+    $configPath = Join-Path -Path $binDir -ChildPath "aktis-collector-jira.toml"
+
+    # Start in a new terminal window (cmd) that closes when app exits
+    $startCommand = "cd /d `"$projectRoot`" && `"$collectorOutputPath`""
+
+    Start-Process cmd -ArgumentList "/c", $startCommand
+
+    Write-Host "Application started in new terminal window" -ForegroundColor Green
+    Write-Host "Working Directory: $projectRoot" -ForegroundColor Cyan
+    Write-Host "Executable: $collectorOutputPath" -ForegroundColor Cyan
+    Write-Host "Config: $configPath" -ForegroundColor Cyan
+    Write-Host "(Terminal will automatically close when application stops)" -ForegroundColor Gray
+} else {
+    Write-Host "`nTo run with local config:" -ForegroundColor Yellow
+    Write-Host "./bin/aktis-collector-jira.exe" -ForegroundColor White
+}

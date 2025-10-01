@@ -408,13 +408,14 @@
   <div class="header">
     <div>
       <h1>Aktis Jira Collector</h1>
-      <div class="version">v0.1.119</div>
+      <div class="version" id="version-info">Extension: v0.0.0 | Server: v0.0.0</div>
     </div>
   </div>
 
   <div class="tabs">
     <div class="tab active" data-tab="collect">Collect</div>
     <div class="tab" data-tab="buffer">Stored Data</div>
+    <div class="tab" data-tab="logs">Logs</div>
     <div class="tab" data-tab="settings">Settings</div>
   </div>
 
@@ -458,6 +459,15 @@
       <div id="page-description" class="page-description" style="display:none;"></div>
 
       <div id="collect-message"></div>
+
+      <!-- Logs Section on Collect Tab -->
+      <div class="settings-group" style="margin-top: 16px;">
+        <div class="buffer-header">
+          <span class="buffer-title">Activity Logs</span>
+          <button class="icon-button" id="clear-logs-btn-collect">Clear</button>
+        </div>
+        <textarea id="log-output-collect" readonly style="width: 100%; height: 200px; font-family: monospace; font-size: 11px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background: #1e1e1e; color: #d4d4d4; resize: vertical;"></textarea>
+      </div>
     </div>
 
     <!-- Buffer Tab -->
@@ -470,6 +480,17 @@
         <div id="buffer-content">
           <div class="loading">Loading projects...</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Logs Tab -->
+    <div class="tab-content" id="logs-tab">
+      <div class="settings-group">
+        <div class="buffer-header">
+          <span class="buffer-title">Extension Logs</span>
+          <button class="icon-button" id="clear-logs-btn">Clear</button>
+        </div>
+        <textarea id="log-output" readonly style="width: 100%; height: 400px; font-family: monospace; font-size: 11px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background: #1e1e1e; color: #d4d4d4; resize: vertical;"></textarea>
       </div>
     </div>
 

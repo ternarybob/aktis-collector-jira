@@ -26,6 +26,7 @@ type APIHandlers struct {
 	logger    arbor.ILogger
 	startTime time.Time
 	assessor  interfaces.PageAssessor
+	wsHub     *WebSocketHub
 }
 
 // HealthResponse represents the health check response
@@ -39,6 +40,20 @@ type HealthResponse struct {
 		Database bool `json:"database"`
 		Jira     bool `json:"jira"`
 	} `json:"services"`
+}
+
+// VersionResponse represents version information for both server and extension
+type VersionResponse struct {
+	Server struct {
+		Version string `json:"version"`
+		Build   string `json:"build"`
+		Commit  string `json:"commit"`
+	} `json:"server"`
+	Extension struct {
+		Version        string `json:"version"`
+		LatestVersion  string `json:"latest_version"`
+		UpdateRequired bool   `json:"update_required"`
+	} `json:"extension"`
 }
 
 // StatusResponse represents the collector status response
@@ -84,13 +99,14 @@ type DatabaseResponse struct {
 }
 
 // NewAPIHandlers creates a new API handlers instance
-func NewAPIHandlers(config *common.Config, storage interfaces.Storage, logger arbor.ILogger, assessor interfaces.PageAssessor) *APIHandlers {
+func NewAPIHandlers(config *common.Config, storage interfaces.Storage, logger arbor.ILogger, assessor interfaces.PageAssessor, wsHub *WebSocketHub) *APIHandlers {
 	return &APIHandlers{
 		config:    config,
 		storage:   storage,
 		logger:    logger,
 		startTime: time.Now(),
 		assessor:  assessor,
+		wsHub:     wsHub,
 	}
 }
 
@@ -117,6 +133,39 @@ func (h *APIHandlers) HealthHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(health); err != nil {
 		h.logger.Error().Err(err).Msg("Failed to encode health response")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+
+// VersionHandler returns version information and checks for extension updates
+func (h *APIHandlers) VersionHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Get client's extension version from query parameter
+	clientExtVersion := r.URL.Query().Get("extension_version")
+
+	// Read latest extension version from .version file
+	latestExtVersion := common.GetExtensionVersion()
+
+	versionResp := VersionResponse{}
+
+	// Server version info
+	versionResp.Server.Version = common.GetVersion()
+	versionResp.Server.Build = common.GetBuild()
+	versionResp.Server.Commit = common.GetGitCommit()
+
+	// Extension version info
+	versionResp.Extension.LatestVersion = latestExtVersion
+	if clientExtVersion != "" {
+		versionResp.Extension.Version = clientExtVersion
+		versionResp.Extension.UpdateRequired = clientExtVersion != latestExtVersion
+	} else {
+		versionResp.Extension.Version = "unknown"
+		versionResp.Extension.UpdateRequired = false
+	}
+
+	if err := json.NewEncoder(w).Encode(versionResp); err != nil {
+		h.logger.Error().Err(err).Msg("Failed to encode version response")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
@@ -442,12 +491,22 @@ type ExtensionDataPayload struct {
 
 // ReceiverResponse represents the response to extension data
 type ReceiverResponse struct {
-	Success   bool        `json:"success"`
-	Message   string      `json:"message"`
-	Timestamp time.Time   `json:"timestamp"`
-	Error     string      `json:"error,omitempty"`
-	Data      interface{} `json:"data,omitempty"`
-	PageType  string      `json:"page_type,omitempty"`
+	Success       bool             `json:"success"`
+	Message       string           `json:"message"`
+	Timestamp     time.Time        `json:"timestamp"`
+	Error         string           `json:"error,omitempty"`
+	Data          interface{}      `json:"data,omitempty"`
+	PageType      string           `json:"page_type,omitempty"`
+	TransactionID string           `json:"transaction_id,omitempty"`
+	Stats         *CollectionStats `json:"stats,omitempty"`
+}
+
+// CollectionStats represents statistics from a collection operation
+type CollectionStats struct {
+	ProjectsAdded int `json:"projects_added"`
+	ProjectsTotal int `json:"projects_total"`
+	TicketsAdded  int `json:"tickets_added"`
+	TicketsTotal  int `json:"tickets_total"`
 }
 
 // ProjectResponse represents a project in the response
@@ -547,11 +606,25 @@ func (h *APIHandlers) ReceiverHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate transaction ID for tracking
+	transactionID := fmt.Sprintf("txn-%d", time.Now().UnixNano())
+
 	h.logger.Info().
+		Str("transaction_id", transactionID).
 		Str("url", payload.URL).
 		Str("collector", payload.Collector.Name).
 		Str("version", payload.Collector.Version).
 		Msg("Received data from Chrome extension")
+
+	// Broadcast collection started event to WebSocket clients
+	if h.wsHub != nil {
+		h.wsHub.SendCollectionUpdate("collection_started", map[string]interface{}{
+			"transaction_id": transactionID,
+			"url":            payload.URL,
+			"title":          payload.Title,
+			"timestamp":      payload.Timestamp,
+		})
+	}
 
 	// Use page assessor to intelligently determine page type and processability
 	htmlContent := ""
@@ -578,11 +651,24 @@ func (h *APIHandlers) ReceiverHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If not collectable, return early with info
 	if !assessment.Collectable {
+		// Broadcast non-collectable status
+		if h.wsHub != nil {
+			h.wsHub.SendCollectionUpdate("collection_skipped", map[string]interface{}{
+				"transaction_id": transactionID,
+				"url":            payload.URL,
+				"page_type":      assessment.PageType,
+				"confidence":     assessment.Confidence,
+				"reason":         "not collectable",
+				"description":    assessment.Description,
+			})
+		}
+
 		response := ReceiverResponse{
-			Success:   true,
-			Message:   fmt.Sprintf("Page received but not collectable: %s", assessment.Description),
-			Timestamp: time.Now(),
-			PageType:  assessment.PageType,
+			Success:       true,
+			Message:       fmt.Sprintf("Page received but not collectable: %s", assessment.Description),
+			Timestamp:     time.Now(),
+			PageType:      assessment.PageType,
+			TransactionID: transactionID,
 			Data: map[string]interface{}{
 				"assessment": assessment,
 			},
@@ -591,33 +677,75 @@ func (h *APIHandlers) ReceiverHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the received data and get response data
-	responseData, err := h.storeExtensionData(payload, assessment.PageType)
+	// Store the received data and get response data with stats
+	responseData, stats, err := h.storeExtensionDataWithStats(payload, assessment.PageType, transactionID)
 	if err != nil {
-		h.logger.Error().Err(err).Msg("Failed to store extension data")
+		h.logger.Error().
+			Str("transaction_id", transactionID).
+			Err(err).
+			Msg("Failed to store extension data")
+
+		// Broadcast failure event
+		if h.wsHub != nil {
+			h.wsHub.SendCollectionUpdate("collection_failed", map[string]interface{}{
+				"transaction_id": transactionID,
+				"url":            payload.URL,
+				"page_type":      assessment.PageType,
+				"error":          err.Error(),
+			})
+		}
+
 		response := ReceiverResponse{
-			Success:   false,
-			Message:   "Failed to store data",
-			Error:     err.Error(),
-			Timestamp: time.Now(),
-			PageType:  assessment.PageType,
+			Success:       false,
+			Message:       "Failed to store data",
+			Error:         err.Error(),
+			Timestamp:     time.Now(),
+			PageType:      assessment.PageType,
+			TransactionID: transactionID,
 		}
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(response)
 		return
 	}
 
+	// Build success message with stats
+	successMsg := fmt.Sprintf("Successfully processed %s page", assessment.PageType)
+	if stats != nil {
+		if stats.ProjectsAdded > 0 {
+			successMsg += fmt.Sprintf(" - Added %d project(s)", stats.ProjectsAdded)
+		}
+		if stats.TicketsAdded > 0 {
+			successMsg += fmt.Sprintf(" - Added %d ticket(s)", stats.TicketsAdded)
+		}
+	}
+
 	response := ReceiverResponse{
-		Success:   true,
-		Message:   fmt.Sprintf("Successfully received and stored %s page data", assessment.PageType),
-		Timestamp: time.Now(),
-		PageType:  assessment.PageType,
-		Data:      responseData,
+		Success:       true,
+		Message:       successMsg,
+		Timestamp:     time.Now(),
+		PageType:      assessment.PageType,
+		TransactionID: transactionID,
+		Data:          responseData,
+		Stats:         stats,
 	}
 
 	h.logger.Info().
+		Str("transaction_id", transactionID).
 		Str("page_type", assessment.PageType).
+		Int("projects_added", stats.ProjectsAdded).
+		Int("tickets_added", stats.TicketsAdded).
 		Msg("Successfully processed extension data")
+
+	// Broadcast success event with collection details
+	if h.wsHub != nil {
+		h.wsHub.SendCollectionUpdate("collection_success", map[string]interface{}{
+			"transaction_id": transactionID,
+			"url":            payload.URL,
+			"page_type":      assessment.PageType,
+			"stats":          stats,
+			"data":           responseData,
+		})
+	}
 
 	json.NewEncoder(w).Encode(response)
 }
@@ -678,7 +806,21 @@ func (h *APIHandlers) storeExtensionData(payload ExtensionDataPayload, assessedP
 	}
 
 	if len(results) == 0 {
-		h.logger.Info().Str("page_type", pageType).Msg("No data found in HTML")
+		h.logger.Warn().
+			Str("page_type", pageType).
+			Str("url", payload.URL).
+			Int("html_size", len(htmlContent)).
+			Msg("No data found in HTML - parser returned empty results")
+
+		// Log HTML snippet for debugging (first 1000 chars)
+		snippet := htmlContent
+		if len(snippet) > 1000 {
+			snippet = snippet[:1000]
+		}
+		h.logger.Debug().
+			Str("html_snippet", snippet).
+			Msg("HTML content preview for debugging")
+
 		return nil, nil
 	}
 
@@ -771,4 +913,39 @@ func (h *APIHandlers) storeExtensionData(payload ExtensionDataPayload, assessedP
 	return map[string]interface{}{
 		"tickets_collected": len(results),
 	}, nil
+}
+
+// storeExtensionDataWithStats wraps storeExtensionData and calculates collection statistics
+func (h *APIHandlers) storeExtensionDataWithStats(payload ExtensionDataPayload, assessedPageType string, transactionID string) (interface{}, *CollectionStats, error) {
+	// Get counts before processing
+	projectsBefore, _ := h.storage.LoadProjects()
+	ticketsBefore, _ := h.storage.LoadAllTickets()
+
+	// Store the data
+	responseData, err := h.storeExtensionData(payload, assessedPageType)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Get counts after processing
+	projectsAfter, _ := h.storage.LoadProjects()
+	ticketsAfter, _ := h.storage.LoadAllTickets()
+
+	// Calculate statistics
+	stats := &CollectionStats{
+		ProjectsAdded: len(projectsAfter) - len(projectsBefore),
+		ProjectsTotal: len(projectsAfter),
+		TicketsAdded:  len(ticketsAfter) - len(ticketsBefore),
+		TicketsTotal:  len(ticketsAfter),
+	}
+
+	h.logger.Debug().
+		Str("transaction_id", transactionID).
+		Int("projects_added", stats.ProjectsAdded).
+		Int("projects_total", stats.ProjectsTotal).
+		Int("tickets_added", stats.TicketsAdded).
+		Int("tickets_total", stats.TicketsTotal).
+		Msg("Collection statistics calculated")
+
+	return responseData, stats, nil
 }

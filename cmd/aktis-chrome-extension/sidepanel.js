@@ -7,18 +7,211 @@ let config = {
   autoNavigate: false
 };
 
+// WebSocket connection
+let ws = null;
+let wsReconnectTimer = null;
+
+// Log buffer (circular buffer, max 50 lines)
+const MAX_LOG_LINES = 50;
+let logBuffer = [];
+
+// Logging functions
+function addLog(message, level = 'info') {
+  const timestamp = new Date().toLocaleTimeString();
+  const logEntry = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
+
+  logBuffer.push(logEntry);
+  if (logBuffer.length > MAX_LOG_LINES) {
+    logBuffer.shift();
+  }
+
+  updateLogDisplay();
+
+  // Also log to console with appropriate level
+  if (level === 'error') {
+    console.error(message);
+  } else if (level === 'warn') {
+    console.warn(message);
+  } else {
+    console.log(message);
+  }
+}
+
+function updateLogDisplay() {
+  const logText = logBuffer.join('\n');
+
+  // Update main logs tab
+  const logOutput = document.getElementById('log-output');
+  if (logOutput) {
+    logOutput.value = logText;
+    logOutput.scrollTop = logOutput.scrollHeight;
+  }
+
+  // Update collect tab logs
+  const logOutputCollect = document.getElementById('log-output-collect');
+  if (logOutputCollect) {
+    logOutputCollect.value = logText;
+    logOutputCollect.scrollTop = logOutputCollect.scrollHeight;
+  }
+}
+
+function clearLogs() {
+  logBuffer = [];
+  updateLogDisplay();
+}
+
+// WebSocket connection management
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return; // Already connected
+  }
+
+  const wsUrl = config.serverUrl.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws';
+  addLog(`Connecting to WebSocket: ${wsUrl}`);
+
+  try {
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      addLog('WebSocket connected');
+      updateServerStatus('online');
+      if (wsReconnectTimer) {
+        clearInterval(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'status') {
+          updateServerStatus(data.status);
+        } else if (data.type === 'collection_started') {
+          addLog(`Processing: ${data.data.url}...`, 'info');
+        } else if (data.type === 'collection_success') {
+          const stats = data.data.stats;
+          let msg = `✓ Success: ${data.data.page_type}`;
+          if (stats) {
+            if (stats.projects_added > 0) msg += ` | +${stats.projects_added} project(s)`;
+            if (stats.tickets_added > 0) msg += ` | +${stats.tickets_added} ticket(s)`;
+          }
+          addLog(msg, 'info');
+          loadCounts();
+        } else if (data.type === 'collection_skipped') {
+          addLog(`⊘ Skipped: ${data.data.page_type} (${data.data.description})`, 'warn');
+        } else if (data.type === 'collection_failed') {
+          addLog(`✗ Failed: ${data.data.error}`, 'error');
+        } else if (data.type === 'logs') {
+          // Stream server logs to extension log display
+          if (data.logs && Array.isArray(data.logs)) {
+            data.logs.forEach(log => {
+              const level = log.level.toLowerCase();
+              addLog(`[SERVER] ${log.message}`, level);
+            });
+          }
+        }
+      } catch (err) {
+        addLog(`Failed to parse WebSocket message: ${err.message}`, 'error');
+      }
+    };
+
+    ws.onerror = (error) => {
+      addLog(`WebSocket error: ${error}`, 'error');
+      updateServerStatus('offline');
+    };
+
+    ws.onclose = () => {
+      addLog('WebSocket disconnected', 'warn');
+      updateServerStatus('offline');
+
+      // Auto-reconnect every 5 seconds
+      if (!wsReconnectTimer) {
+        wsReconnectTimer = setInterval(() => {
+          addLog('Attempting to reconnect WebSocket...', 'info');
+          connectWebSocket();
+        }, 5000);
+      }
+    };
+  } catch (err) {
+    addLog(`Failed to create WebSocket: ${err.message}`, 'error');
+    updateServerStatus('offline');
+  }
+}
+
+function updateServerStatus(status) {
+  const statusEl = document.getElementById('server-status');
+  if (statusEl) {
+    statusEl.textContent = status === 'online' ? 'Online' : 'Offline';
+    statusEl.className = `status-value ${status}`;
+  }
+}
+
+// Check and display version information
+async function checkVersion() {
+  try {
+    // Get extension version from manifest
+    const manifest = chrome.runtime.getManifest();
+    const extensionVersion = manifest.version;
+
+    // Fetch version info from server
+    const response = await fetch(`${config.serverUrl}/version?extension_version=${extensionVersion}`);
+    if (response.ok) {
+      const versionData = await response.json();
+
+      // Update version display
+      const versionEl = document.getElementById('version-info');
+      if (versionEl) {
+        let versionText = `Extension: v${extensionVersion} | Server: v${versionData.server.version}`;
+
+        // Check if update required
+        if (versionData.extension.update_required) {
+          versionText += ` ⚠️ Update Available (v${versionData.extension.latest_version})`;
+          versionEl.style.color = '#FF8B00';
+          addLog(`Extension update available: v${versionData.extension.latest_version}`, 'warn');
+        }
+
+        versionEl.textContent = versionText;
+      }
+
+      addLog(`Version check: Extension v${extensionVersion}, Server v${versionData.server.version}`);
+    }
+  } catch (error) {
+    addLog(`Failed to check version: ${error.message}`, 'error');
+  }
+}
+
 // Load config on startup
 loadConfig();
 loadLastCollection();
+checkVersion();
+addLog('Sidepanel initialized');
 
 // Listen for auto-collection completion messages from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'AUTO_COLLECT_COMPLETE') {
-    if (message.success) {
+    if (message.success && message.response) {
       updateLastCollection();
-      console.log('Auto-collection completed for:', message.url);
+
+      // Build log message with stats
+      let logMsg = `Collected: ${message.url}`;
+      if (message.response.stats) {
+        const stats = message.response.stats;
+        if (stats.projects_added > 0) {
+          logMsg += ` | +${stats.projects_added} project(s)`;
+        }
+        if (stats.tickets_added > 0) {
+          logMsg += ` | +${stats.tickets_added} ticket(s)`;
+        }
+        logMsg += ` | Total: ${stats.projects_total} projects, ${stats.tickets_total} tickets`;
+      }
+
+      addLog(logMsg, 'info');
+
+      // Refresh counts in UI
+      loadCounts();
     } else {
-      console.log('Auto-collection failed:', message.error);
+      addLog(`Collection failed: ${message.error || 'Unknown error'} (${message.context})`, 'error');
     }
   }
 });
@@ -46,6 +239,8 @@ function switchTab(tabName) {
   } else if (tabName === 'collect') {
     checkServerStatus();
     detectPageType();
+  } else if (tabName === 'logs') {
+    updateLogDisplay();
   }
 }
 
@@ -58,6 +253,9 @@ function loadConfig() {
       document.getElementById('auto-collect').checked = config.autoCollect || false;
     }
     checkServerStatus();
+
+    // Connect WebSocket after config is loaded
+    connectWebSocket();
   });
 }
 
@@ -141,7 +339,7 @@ async function checkServerStatus() {
       statusEl.className = 'status-value offline';
     }
   } catch (error) {
-    console.error('Failed to check server status:', error);
+    console.warn('Failed to check server status:', error);
     statusEl.textContent = 'Offline';
     statusEl.className = 'status-value offline';
   }
@@ -335,6 +533,18 @@ async function collectProjectTickets(projectKey, projectUrl) {
 }
 
 // Clear buffer data
+// Clear logs button (Logs tab)
+document.getElementById('clear-logs-btn').addEventListener('click', () => {
+  clearLogs();
+  addLog('Logs cleared');
+});
+
+// Clear logs button (Collect tab)
+document.getElementById('clear-logs-btn-collect').addEventListener('click', () => {
+  clearLogs();
+  addLog('Logs cleared');
+});
+
 document.getElementById('clear-buffer-btn').addEventListener('click', async () => {
   if (!confirm('Are you sure you want to clear all data? This will delete all projects and tickets permanently.')) {
     return;
@@ -424,6 +634,8 @@ document.getElementById('process-page-btn').addEventListener('click', async () =
   const btn = document.getElementById('process-page-btn');
   btn.disabled = true;
   btn.textContent = 'Processing...';
+
+  addLog('Manual page collection started');
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

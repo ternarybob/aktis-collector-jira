@@ -37,7 +37,7 @@ func Logging(logger arbor.ILogger) func(http.HandlerFunc) http.HandlerFunc {
 
 			duration := time.Since(start)
 
-			logger.Info().
+			logger.Debug().
 				Str("method", r.Method).
 				Str("path", r.URL.Path).
 				Str("remote_addr", r.RemoteAddr).

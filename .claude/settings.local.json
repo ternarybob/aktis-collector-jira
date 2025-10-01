@@ -49,7 +49,11 @@
       "Bash(grep:*)",
       "Bash(ls:*)",
       "Bash(awk:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Read(//c/development/ternarybob/atlassian-test-data-populator/scripts/**)",
+      "Bash(Sort-Object LastWriteTime -Descending)",
+      "Bash(Select-Object -First 1)",
+      "Bash(Select-Object -ExpandProperty Name)"
     ],
     "deny": [],
     "ask": []

@@ -24,6 +24,7 @@ type webServer struct {
 	logger      arbor.ILogger
 	apiHandlers *handlers.APIHandlers
 	uiHandlers  *handlers.UIHandlers
+	wsHub       *handlers.WebSocketHub
 	running     bool
 	startTime   time.Time
 }
@@ -35,8 +36,11 @@ func NewWebServer(cfg *common.Config, storage interfaces.Storage, logger arbor.I
 	// Create page assessor service
 	assessor := NewPageAssessor(logger)
 
-	// Create API handlers with assessor
-	apiHandlers := handlers.NewAPIHandlers(cfg, storage, logger, assessor)
+	// Create WebSocket hub first (needed by API handlers)
+	wsHub := handlers.NewWebSocketHub(logger)
+
+	// Create API handlers with assessor and WebSocket hub
+	apiHandlers := handlers.NewAPIHandlers(cfg, storage, logger, assessor, wsHub)
 
 	// Find pages directory - check both relative to working dir and binary location
 	pagesDir := "pages"
@@ -60,6 +64,7 @@ func NewWebServer(cfg *common.Config, storage interfaces.Storage, logger arbor.I
 		logger:      logger,
 		apiHandlers: apiHandlers,
 		uiHandlers:  uiHandlers,
+		wsHub:       wsHub,
 		server: &http.Server{
 			Addr:    fmt.Sprintf(":%d", cfg.Collector.Port),
 			Handler: mux,
@@ -72,12 +77,16 @@ func NewWebServer(cfg *common.Config, storage interfaces.Storage, logger arbor.I
 
 	// Register API endpoints with middleware
 	mux.HandleFunc("/health", logMiddleware(corsMiddleware(apiHandlers.HealthHandler)))
+	mux.HandleFunc("/version", logMiddleware(corsMiddleware(apiHandlers.VersionHandler)))
 	mux.HandleFunc("/status", logMiddleware(corsMiddleware(apiHandlers.StatusHandler)))
 	mux.HandleFunc("/projects", logMiddleware(corsMiddleware(apiHandlers.ProjectsHandler)))
 	mux.HandleFunc("/database", logMiddleware(corsMiddleware(apiHandlers.DatabaseHandler)))
 	mux.HandleFunc("/config", logMiddleware(corsMiddleware(apiHandlers.ConfigHandler)))
 	mux.HandleFunc("/assess", logMiddleware(corsMiddleware(apiHandlers.AssessHandler)))
 	mux.HandleFunc("/receiver", logMiddleware(corsMiddleware(apiHandlers.ReceiverHandler)))
+
+	// Register WebSocket endpoint
+	mux.HandleFunc("/ws", corsMiddleware(wsHub.WebSocketHandler))
 
 	// Register UI endpoints if available
 	if uiHandlers != nil {

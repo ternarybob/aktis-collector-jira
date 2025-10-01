@@ -94,6 +94,14 @@ func createLogger(config *LoggingConfig) (arbor.ILogger, error) {
 	// Initialize arbor logger
 	l := arbor.NewLogger()
 
+	// Configure memory writer for WebSocket streaming
+	l = l.WithMemoryWriter(models.WriterConfiguration{
+		Type:             models.LogWriterTypeMemory,
+		TimeFormat:       "15:04:05",
+		TextOutput:       true,
+		DisableTimestamp: false,
+	})
+
 	// Configure file logging if requested
 	if config.Output == "both" || config.Output == "file" || config.Output == "" {
 		logFile := filepath.Join(logsDir, "aktis-collector-jira.log")

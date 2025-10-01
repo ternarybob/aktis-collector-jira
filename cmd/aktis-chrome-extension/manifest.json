@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aktis Jira Collector",
-  "version": "0.1.119",
+  "version": "0.1.162",
   "description": "Collects Jira page data and sends it to Aktis Collector server",
   "permissions": [
     "activeTab",
@@ -25,7 +25,9 @@
         "https://*.atlassian.net/*",
         "https://*.jira.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

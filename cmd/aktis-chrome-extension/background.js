@@ -4,20 +4,10 @@
 const DEFAULT_CONFIG = {
   serverUrl: 'http://localhost:8084',
   autoCollect: false,
-  followLinks: false
+  followLinks: false,
+  collectDelay: 5000  // 5 seconds delay for content to load (modern Jira uses virtual scrolling)
 };
 
-// Initialize extension
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('Aktis Jira Collector extension installed');
-
-  // Set default configuration
-  chrome.storage.sync.get(['config'], (result) => {
-    if (!result.config) {
-      chrome.storage.sync.set({ config: DEFAULT_CONFIG });
-    }
-  });
-});
 
 // Monitor navigation and page refreshes for automatic collection
 // Using webNavigation API for more reliable detection of both navigation and refresh
@@ -42,47 +32,10 @@ chrome.webNavigation.onCompleted.addListener(
 
     console.log('[AUTO-COLLECT] Jira page detected');
 
-    // Get config to check if auto-collect is enabled
-    try {
-      const result = await chrome.storage.sync.get(['config']);
-      const config = result.config || DEFAULT_CONFIG;
-
-      console.log('[AUTO-COLLECT] Config loaded, autoCollect =', config.autoCollect);
-
-      if (config.autoCollect) {
-        console.log('[AUTO-COLLECT] Auto-collect enabled, starting collection');
-
-        // Small delay to ensure dynamic content is loaded
-        setTimeout(async () => {
-          try {
-            console.log('[AUTO-COLLECT] Collecting from tab:', tabId);
-            const response = await collectPageFromTab(tabId);
-            console.log('[AUTO-COLLECT] Collection successful:', response);
-
-            // Notify side panel if open
-            chrome.runtime.sendMessage({
-              type: 'AUTO_COLLECT_COMPLETE',
-              url: url,
-              success: true
-            }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
-          } catch (error) {
-            console.error('[AUTO-COLLECT] Collection failed:', error);
-
-            // Notify side panel if open
-            chrome.runtime.sendMessage({
-              type: 'AUTO_COLLECT_COMPLETE',
-              url: url,
-              success: false,
-              error: error.message
-            }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
-          }
-        }, 1500);
-      } else {
-        console.log('[AUTO-COLLECT] Auto-collect disabled, skipping');
-      }
-    } catch (error) {
-      console.error('[AUTO-COLLECT] Error loading config:', error);
-    }
+    // Use centralized auto-collection handler
+    performAutoCollection(tabId, url, 'page-load').catch(err => {
+      console.warn('[AUTO-COLLECT] Page load collection error:', err);
+    });
   },
   {
     url: [
@@ -113,43 +66,10 @@ chrome.webNavigation.onHistoryStateUpdated.addListener(
 
     console.log('[AUTO-COLLECT] Jira SPA navigation detected');
 
-    // Get config to check if auto-collect is enabled
-    try {
-      const result = await chrome.storage.sync.get(['config']);
-      const config = result.config || DEFAULT_CONFIG;
-
-      if (config.autoCollect) {
-        console.log('[AUTO-COLLECT] Auto-collect enabled for SPA navigation, starting collection');
-
-        // Small delay to ensure dynamic content is loaded
-        setTimeout(async () => {
-          try {
-            console.log('[AUTO-COLLECT] Collecting from tab:', tabId);
-            const response = await collectPageFromTab(tabId);
-            console.log('[AUTO-COLLECT] SPA collection successful:', response);
-
-            // Notify side panel if open
-            chrome.runtime.sendMessage({
-              type: 'AUTO_COLLECT_COMPLETE',
-              url: url,
-              success: true
-            }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
-          } catch (error) {
-            console.error('[AUTO-COLLECT] SPA collection failed:', error);
-
-            // Notify side panel if open
-            chrome.runtime.sendMessage({
-              type: 'AUTO_COLLECT_COMPLETE',
-              url: url,
-              success: false,
-              error: error.message
-            }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
-          }
-        }, 1500);
-      }
-    } catch (error) {
-      console.error('[AUTO-COLLECT] Error loading config for SPA navigation:', error);
-    }
+    // Use centralized auto-collection handler
+    performAutoCollection(tabId, url, 'spa-navigation').catch(err => {
+      console.warn('[AUTO-COLLECT] SPA navigation collection error:', err);
+    });
   },
   {
     url: [
@@ -166,6 +86,82 @@ function isJiraURL(url) {
          url.includes('/jira/') ||
          url.includes('/browse/') ||
          url.includes('/projects/');
+}
+
+// Centralized auto-collection handler with retry logic
+async function performAutoCollection(tabId, url, context = 'unknown') {
+  try {
+    // Get config
+    const configResult = await chrome.storage.sync.get(['config']);
+    const config = configResult.config || DEFAULT_CONFIG;
+
+    // Check if auto-collect is enabled
+    if (!config.autoCollect) {
+      console.log(`[AUTO-COLLECT] Auto-collect disabled, skipping (${context})`);
+      return;
+    }
+
+    // Delay to ensure dynamic content is loaded
+    const delay = config.collectDelay || 5000;
+    console.log(`[AUTO-COLLECT] Starting collection (${context}), waiting ${delay}ms for content to load...`);
+
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    // First attempt
+    try {
+      console.log(`[AUTO-COLLECT] Collecting from tab ${tabId} (${context})`);
+      const response = await collectPageFromTab(tabId);
+      console.log(`[AUTO-COLLECT] Collection successful (${context}):`, response);
+
+      // Notify side panel if open
+      chrome.runtime.sendMessage({
+        type: 'AUTO_COLLECT_COMPLETE',
+        url: url,
+        success: true,
+        response: response,
+        context: context
+      }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
+
+      return response;
+    } catch (error) {
+      console.warn(`[AUTO-COLLECT] Collection failed (${context}):`, error);
+
+      // Retry once after additional delay
+      console.log(`[AUTO-COLLECT] Retrying collection in 2 seconds (${context})...`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      try {
+        const retryResponse = await collectPageFromTab(tabId);
+        console.log(`[AUTO-COLLECT] Retry successful (${context}):`, retryResponse);
+
+        chrome.runtime.sendMessage({
+          type: 'AUTO_COLLECT_COMPLETE',
+          url: url,
+          success: true,
+          response: retryResponse,
+          context: context,
+          retry: true
+        }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
+
+        return retryResponse;
+      } catch (retryError) {
+        console.warn(`[AUTO-COLLECT] Retry also failed (${context}):`, retryError);
+
+        chrome.runtime.sendMessage({
+          type: 'AUTO_COLLECT_COMPLETE',
+          url: url,
+          success: false,
+          error: retryError.message,
+          context: context
+        }).catch(() => console.log('[AUTO-COLLECT] No sidepanel listener'));
+
+        throw retryError;
+      }
+    }
+  } catch (error) {
+    console.warn(`[AUTO-COLLECT] Error in performAutoCollection (${context}):`, error);
+    throw error;
+  }
 }
 
 // Listen for messages from content script and popup
@@ -359,54 +355,60 @@ async function navigateAndCollect(projectUrl, projectKey) {
     chrome.tabs.onUpdated.addListener(listener);
   });
 
-  // Wait a bit more for dynamic content to load
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  // Get config to determine delay
+  const result = await chrome.storage.sync.get(['config']);
+  const config = result.config || DEFAULT_CONFIG;
+  const delay = config.collectDelay || 5000;
+
+  // Wait for dynamic content to load
+  console.log('[AUTO-COLLECT] Waiting', delay, 'ms for content to load before collection...');
+  await new Promise(resolve => setTimeout(resolve, delay));
 
   console.log('About to collect from tab:', targetTab.id);
 
   // Now collect the page
-  const result = await collectPageFromTab(targetTab.id);
-  return result;
+  const collectResult = await collectPageFromTab(targetTab.id);
+  return collectResult;
 }
 
 // Handle browser action click - open side panel
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ windowId: tab.windowId });
 });
-// Trigger initial assessment when extension loads (on browser startup)
+
+// Trigger auto-collection on extension startup
 chrome.runtime.onStartup.addListener(async () => {
   console.log('[AUTO-COLLECT] Extension started, checking current tab...');
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tabs.length > 0) {
     const tab = tabs[0];
     if (isJiraURL(tab.url)) {
-      const result = await chrome.storage.sync.get(['config']);
-      const config = result.config || DEFAULT_CONFIG;
-      if (config.autoCollect) {
-        console.log('[AUTO-COLLECT] Auto-collect enabled on startup, processing current page');
-        setTimeout(async () => {
-          await collectPageFromTab(tab.id);
-        }, 2000);
-      }
+      performAutoCollection(tab.id, tab.url, 'startup').catch(err => {
+        console.warn('[AUTO-COLLECT] Startup collection error:', err);
+      });
     }
   }
 });
 
-// Also trigger on extension installation/update
+// Trigger auto-collection on extension installation/update
 chrome.runtime.onInstalled.addListener(async () => {
-  console.log('[AUTO-COLLECT] Extension installed/updated, checking current tab...');
+  console.log('[AUTO-COLLECT] Extension installed/updated');
+
+  // Set default configuration if not present
+  const configResult = await chrome.storage.sync.get(['config']);
+  if (!configResult.config) {
+    await chrome.storage.sync.set({ config: DEFAULT_CONFIG });
+    console.log('[AUTO-COLLECT] Default configuration initialized');
+  }
+
+  // Check current tab for auto-collection
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tabs.length > 0) {
     const tab = tabs[0];
     if (isJiraURL(tab.url)) {
-      const result = await chrome.storage.sync.get(['config']);
-      const config = result.config || DEFAULT_CONFIG;
-      if (config.autoCollect) {
-        console.log('[AUTO-COLLECT] Auto-collect enabled, processing current page');
-        setTimeout(async () => {
-          await collectPageFromTab(tab.id);
-        }, 2000);
-      }
+      performAutoCollection(tab.id, tab.url, 'install').catch(err => {
+        console.warn('[AUTO-COLLECT] Install collection error:', err);
+      });
     }
   }
 });

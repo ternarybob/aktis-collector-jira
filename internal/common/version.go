@@ -1,5 +1,11 @@
 package common
 
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
+
 // These variables are set via ldflags during build
 var (
 	// Version is the semantic version from .version file
@@ -31,4 +37,34 @@ func GetFullVersion() string {
 		return Version + "-" + Build
 	}
 	return Version
+}
+
+// GetExtensionVersion reads the extension version from .version file
+func GetExtensionVersion() string {
+	// Try multiple possible locations for .version file
+	possiblePaths := []string{
+		".version",
+		filepath.Join("..", ".version"),
+		filepath.Join("..", "..", ".version"),
+	}
+
+	for _, versionPath := range possiblePaths {
+		data, err := os.ReadFile(versionPath)
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "extension_version:") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 {
+					return strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+
+	return "unknown"
 }

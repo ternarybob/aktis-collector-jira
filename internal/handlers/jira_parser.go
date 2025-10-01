@@ -47,14 +47,23 @@ func (p *JiraParser) ParseHTML(htmlContent, pageType, url string) ([]map[string]
 func (p *JiraParser) parseProjectsListPage(doc *html.Node, url string) ([]map[string]interface{}, error) {
 	projects := []map[string]interface{}{}
 
-	// Find all project rows in the table
+	// Strategy 1: Try traditional DOM parsing (old Jira)
 	projectRows := p.findProjectRows(doc)
-
 	for _, row := range projectRows {
 		project := p.extractProjectFromRow(row)
 		if project != nil && project["key"] != nil {
 			projects = append(projects, project)
 		}
+	}
+
+	// Strategy 2: Modern Jira Cloud - extract from script tags or data attributes
+	if len(projects) == 0 {
+		projects = p.extractProjectsFromScriptTags(doc, url)
+	}
+
+	// Strategy 3: Fallback - scan for project links
+	if len(projects) == 0 {
+		projects = p.extractProjectsFromLinks(doc, url)
 	}
 
 	return projects, nil
@@ -66,6 +75,9 @@ func (p *JiraParser) parseIssuePage(doc *html.Node, url string) ([]map[string]in
 
 	// Extract issue key from URL
 	keyRegex := regexp.MustCompile(`/browse/([A-Z]+-\d+)`)
+	selectedIssueRegex := regexp.MustCompile(`[?&]selectedIssue=([A-Z]+-\d+)`)
+
+	// Try URL path first
 	if matches := keyRegex.FindStringSubmatch(url); len(matches) > 1 {
 		issueKey := matches[1]
 		issue["key"] = issueKey
@@ -76,24 +88,31 @@ func (p *JiraParser) parseIssuePage(doc *html.Node, url string) ([]map[string]in
 		if matches := projectKeyRegex.FindStringSubmatch(issueKey); len(matches) > 1 {
 			issue["project_id"] = matches[1]
 		}
+	} else if matches := selectedIssueRegex.FindStringSubmatch(url); len(matches) > 1 {
+		// Modern Jira Cloud uses selectedIssue parameter
+		issueKey := matches[1]
+		issue["key"] = issueKey
+		issue["url"] = url
+
+		// Extract project ID
+		projectKeyRegex := regexp.MustCompile(`^([A-Z]+)-\d+$`)
+		if matches := projectKeyRegex.FindStringSubmatch(issueKey); len(matches) > 1 {
+			issue["project_id"] = matches[1]
+		}
 	}
 
-	// Store raw HTML for future processing
-	var rawHTML strings.Builder
-	htmlRender(doc, &rawHTML)
-	issue["raw_html"] = rawHTML.String()
-
-	// Parse HTML to extract basic fields
-	p.traverseAndExtract(doc, issue, "issue")
-
-	// Extract comprehensive details
-	p.extractIssueDetails(doc, issue)
-	p.extractComments(doc, issue)
-	p.extractSubtasks(doc, issue)
-	p.extractAttachments(doc, issue, url)
-	p.extractLinks(doc, issue, url)
-
+	// If we have the key, proceed with extraction
 	if _, hasKey := issue["key"]; hasKey {
+		// Parse HTML to extract basic fields
+		p.traverseAndExtract(doc, issue, "issue")
+
+		// Extract comprehensive details
+		p.extractIssueDetails(doc, issue)
+		p.extractComments(doc, issue)
+		p.extractSubtasks(doc, issue)
+		p.extractAttachments(doc, issue, url)
+		p.extractLinks(doc, issue, url)
+
 		return []map[string]interface{}{issue}, nil
 	}
 
@@ -820,4 +839,90 @@ func (p *JiraParser) ConvertToTicketData(issueData map[string]interface{}, times
 	}
 
 	return ticket
+}
+
+// extractProjectsFromScriptTags extracts projects from JSON in script tags (modern Jira Cloud)
+func (p *JiraParser) extractProjectsFromScriptTags(doc *html.Node, baseURL string) []map[string]interface{} {
+	projects := []map[string]interface{}{}
+
+	// Modern Jira Cloud embeds data in script tags with patterns like:
+	// window.__INITIAL_STATE__ = {...}
+	// or as inline JSON data attributes
+
+	// For now, return empty - this would require JSON parsing from script content
+	// which is complex. We'll use the link-based fallback instead.
+
+	return projects
+}
+
+// extractProjectsFromLinks scans all links for project references (modern Jira Cloud fallback)
+func (p *JiraParser) extractProjectsFromLinks(doc *html.Node, baseURL string) []map[string]interface{} {
+	projects := []map[string]interface{}{}
+	projectMap := make(map[string]map[string]interface{}) // Deduplicate by key
+
+	projectKeyRegex := regexp.MustCompile(`/projects/([A-Z0-9]+)`)
+
+	var traverse func(*html.Node)
+	traverse = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			var href, text string
+			for _, attr := range n.Attr {
+				if attr.Key == "href" {
+					href = attr.Val
+				}
+			}
+
+			// Extract text content
+			text = strings.TrimSpace(p.extractText(n))
+
+			// Check if this is a project link
+			if matches := projectKeyRegex.FindStringSubmatch(href); len(matches) > 1 {
+				projectKey := matches[1]
+
+				// Skip if we already have this project
+				if _, exists := projectMap[projectKey]; !exists {
+					project := make(map[string]interface{})
+					project["key"] = projectKey
+					project["id"] = projectKey // Use key as ID if no numeric ID
+
+					// Try to extract project name from link text
+					if text != "" && text != projectKey {
+						// Clean up text (remove extra whitespace, newlines)
+						name := strings.Join(strings.Fields(text), " ")
+						if len(name) > 0 && len(name) < 200 { // Reasonable name length
+							project["name"] = name
+						}
+					}
+
+					// Build absolute URL
+					if strings.HasPrefix(href, "http") {
+						project["url"] = href
+					} else if strings.HasPrefix(href, "/") {
+						project["url"] = baseURL + href
+					} else {
+						// Relative URL
+						baseURLRegex := regexp.MustCompile(`(https?://[^/]+)`)
+						if matches := baseURLRegex.FindStringSubmatch(baseURL); len(matches) > 1 {
+							project["url"] = matches[1] + "/" + href
+						}
+					}
+
+					projectMap[projectKey] = project
+				}
+			}
+		}
+
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			traverse(c)
+		}
+	}
+
+	traverse(doc)
+
+	// Convert map to slice
+	for _, project := range projectMap {
+		projects = append(projects, project)
+	}
+
+	return projects
 }
